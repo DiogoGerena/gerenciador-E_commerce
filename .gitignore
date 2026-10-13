@@ -1,0 +1,18 @@
+# Segredos e variáveis de ambiente
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python e Streamlit
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.streamlit/secrets.toml
+
+# Configurações locais
+.vscode/
+.DS_Store
+Thumbs.db
