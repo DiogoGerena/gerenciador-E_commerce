@@ -40,4 +40,4 @@ O sistema DEVE garantir que a atualização da quantidade e o registro da movime
 #### Cenário: Saída com estoque insuficiente
 
 - **QUANDO** um usuário tentar registrar uma saída superior à quantidade disponível
-- **ENT
+- **ENTÃO** o sistema DEVE rejeitar a saída, informar que o estoque é insuficiente e manter inalterados o saldo e o histórico de movimentações.

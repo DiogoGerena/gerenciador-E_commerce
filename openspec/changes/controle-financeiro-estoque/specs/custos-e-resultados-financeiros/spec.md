@@ -4,6 +4,33 @@ Definir os requisitos para registrar os custos relacionados às vendas e calcula
 
 ## ADDED Requirements
 
+### Requirement: Registro manual de vendas
+
+O sistema DEVE permitir que um usuário autorizado registre manualmente uma venda, informando o canal de venda, o número do pedido quando disponível, a data da operação e os itens vendidos.
+
+Cada item da venda DEVE conter o produto, a quantidade, o preço unitário de venda e os descontos aplicáveis, quando houver.
+
+O sistema DEVE validar os dados obrigatórios, as quantidades e os valores informados antes de confirmar a venda.
+
+O sistema DEVE preservar o preço de venda e o custo unitário histórico de cada item no momento do registro, para que alterações posteriores no cadastro do produto ou no custo médio não modifiquem os resultados históricos da venda.
+
+O sistema DEVE integrar a confirmação da venda ao registro das movimentações de estoque e aos cálculos financeiros, impedindo baixas duplicadas e operações que resultem em estoque negativo.
+
+#### Cenário: Registrar venda manual válida
+
+- **QUANDO** um usuário autorizado informar os dados de uma venda e seus itens com valores válidos e estoque suficiente
+- **ENTÃO** o sistema DEVE registrar a venda, preservar os valores históricos dos itens, atualizar o estoque e calcular os valores financeiros correspondentes
+
+#### Cenário: Registrar venda com estoque insuficiente
+
+- **QUANDO** um usuário tentar confirmar uma venda cuja quantidade exceda o estoque disponível
+- **ENTÃO** o sistema DEVE rejeitar a operação sem efetuar a baixa de estoque nem confirmar os registros financeiros
+
+#### Cenário: Impedir registro duplicado
+
+- **QUANDO** o sistema identificar uma venda já registrada com o mesmo canal e número de pedido, quando disponíveis
+- **ENTÃO** o sistema DEVE impedir o registro duplicado e informar o motivo ao usuário
+
 ### Requirement: Registro dos custos de venda
 
 O sistema DEVE permitir registrar os custos relacionados a cada venda, incluindo comissão do marketplace, impostos, frete de saída, embalagem e outros custos adicionais.
@@ -117,4 +144,3 @@ Quando um lançamento precisar ser corrigido, o sistema DEVE atualizar os cálcu
 
 - **QUANDO** um usuário autorizado corrigir um custo registrado
 - **ENTÃO** o sistema DEVE recalcular os valores financeiros afetados e preservar a rastreabilidade da correção
-    
