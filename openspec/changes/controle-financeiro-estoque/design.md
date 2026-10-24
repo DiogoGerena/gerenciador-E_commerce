@@ -106,3 +106,27 @@ Os registros financeiros e de estoque não deverão ser excluídos indiscriminad
 ## Questões em aberto
 
 Não há questões em aberto registradas neste documento neste momento.
+
+### 8. Indicadores financeiros gerenciais e fluxo de caixa
+
+A aplicação deverá distinguir receita bruta, descontos, cancelamentos e receita líquida. As vendas canceladas não devem inflar receita nem ticket médio; devoluções e reembolsos devem seguir regras documentadas para ajustar os valores do período.
+
+- **CMV:** soma do custo unitário histórico de cada item vendido multiplicado pela quantidade considerada válida.
+- **Margem bruta:** receita líquida menos CMV; sua taxa percentual será calculada sobre a receita líquida quando ela for positiva.
+- **Margem de contribuição:** receita líquida menos os custos variáveis associados às vendas. Os custos variáveis deverão ser identificados por sua natureza, sem duplicar custos já registrados.
+- **Ponto de equilíbrio:** estimativa de receita necessária para cobrir os custos fixos, usando a taxa de margem de contribuição. Se não houver dados suficientes ou se a taxa não for positiva, o sistema deverá indicar que não é possível calcular o indicador.
+- **Lucro operacional:** indicador gerencial calculado após CMV e despesas/custos operacionais definidos no projeto. Os componentes incluídos deverão ser explícitos na interface e na documentação.
+- **Lucro líquido gerencial:** resultado após os custos, despesas e resultado financeiro registrados no sistema, incluindo tributos somente quando houver dados cadastrados para isso. Não deverá ser apresentado como lucro contábil oficial.
+- **Ticket médio:** valor total das vendas válidas do período dividido pela quantidade de pedidos válidos, com tratamento documentado para cancelamentos e reembolsos. Se não houver pedidos válidos, apresentar ausência de dados em vez de dividir por zero.
+
+#### Despesas fixas e custos de venda
+
+As despesas fixas deverão registrar, no mínimo, descrição, categoria, valor, recorrência mensal, vencimento e situação de pagamento. Os custos associados às vendas deverão manter classificação e vínculo com a venda quando aplicável, incluindo comissão, embalagem, impostos, frete de saída e outros custos pertinentes.
+
+#### Fluxo de caixa realizado e projetado
+
+O fluxo realizado deverá considerar somente entradas e saídas efetivamente recebidas ou pagas, com data e valor correspondentes. O fluxo projetado deverá considerar valores previstos e sua data esperada, sem somá-los novamente aos valores realizados. A aplicação deverá deixar clara a diferença visual e nos totais entre realizado e projetado.
+
+#### Precisão e consistência
+
+Todos os cálculos deverão ser realizados no backend usando valores decimais adequados a dinheiro. Custos compartilhados de uma venda serão distribuídos proporcionalmente ao valor de venda dos itens, e a soma das parcelas deverá corresponder ao custo original. Os painéis deverão reutilizar as mesmas regras de cálculo dos registros financeiros.
