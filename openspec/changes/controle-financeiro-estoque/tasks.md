@@ -90,3 +90,20 @@
 - [ ] 10.6 Corrigir os problemas encontrados nos testes e executá-los novamente, verificando que as correções não prejudiquem funcionalidades existentes.
 - [ ] 10.7 Documentar a configuração, as funcionalidades implementadas, os procedimentos de execução e os resultados dos testes no README, verificando se outro integrante consegue seguir as instruções.
 - [ ] 10.8 Preparar a aplicação para demonstração, verificando o funcionamento do fluxo principal com dados de teste e sem exposição de credenciais.
+
+
+## 11. Despesas fixas, indicadores gerenciais e fluxo de caixa
+
+- [ ] 11.1 Definir e criar no Xano a estrutura de despesas fixas mensais, incluindo descrição, categoria, valor, recorrência, vencimento e situação de pagamento.
+- [ ] 11.2 Definir a estrutura de lançamentos de caixa com tipo de entrada/saída, valor, data prevista, data efetiva, situação, categoria e referência opcional à venda ou despesa.
+- [ ] 11.3 Implementar o registro e a consulta de despesas fixas, verificando recorrência mensal, vencimentos e situação de pagamento.
+- [ ] 11.4 Implementar o fluxo de caixa realizado considerando apenas valores efetivamente recebidos ou pagos, verificando datas e totais com exemplos conhecidos.
+- [ ] 11.5 Implementar o fluxo de caixa projetado com valores previstos, verificando que valores previstos não sejam contabilizados novamente após serem marcados como realizados.
+- [ ] 11.6 Implementar o cálculo do CMV e da margem bruta, verificando receita líquida, descontos, cancelamentos e custos históricos.
+- [ ] 11.7 Implementar a classificação de custos variáveis e o cálculo da margem de contribuição, verificando que cada custo seja contabilizado uma única vez.
+- [ ] 11.8 Implementar o cálculo do ponto de equilíbrio a partir dos custos fixos e da taxa de margem de contribuição, tratando ausência de dados ou taxa não positiva.
+- [ ] 11.9 Definir e implementar os componentes gerenciais do lucro operacional e do lucro líquido gerencial, documentando claramente quais custos, despesas, resultado financeiro e tributos são considerados.
+- [ ] 11.10 Implementar o ticket médio com base em pedidos válidos, tratando cancelamentos, reembolsos e períodos sem pedidos.
+- [ ] 11.11 Atualizar o dashboard com os indicadores financeiros, filtros por período e distinção visual entre fluxo realizado e projetado.
+- [ ] 11.12 Testar todos os indicadores com cenários numéricos conhecidos, incluindo período sem vendas, receita líquida zero, margem de contribuição não positiva, cancelamentos e despesas ainda não pagas.
+- [ ] 11.13 Verificar se os totais do dashboard correspondem aos registros de vendas, custos, despesas e caixa sem duplicidade.
