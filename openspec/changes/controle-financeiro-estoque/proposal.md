@@ -42,3 +42,15 @@ O controle separado de estoque, compras e vendas dificulta o acompanhamento dos 
 ## Resultado esperado
 
 Entregar uma aplicação funcional que centralize o controle de estoque e os registros financeiros, preserve o histórico das operações e apresente indicadores confiáveis para apoiar a gestão do e-commerce.
+
+## Escopo financeiro ampliado
+
+Além do controle de estoque e dos custos das vendas, a primeira versão incluirá recursos de análise financeira gerencial:
+
+- Cadastro e acompanhamento de despesas fixas mensais.
+- Classificação dos custos e despesas associados às vendas, incluindo custos variáveis.
+- Indicadores de CMV, margem bruta, margem de contribuição, ponto de equilíbrio, lucro operacional, lucro líquido gerencial e ticket médio.
+- Fluxo de caixa realizado e projetado, com distinção explícita entre valores efetivamente recebidos/pagos e valores previstos.
+- Filtros por período e, quando aplicável, por produto e canal de venda.
+
+Os indicadores têm finalidade de análise gerencial e não substituem escrituração contábil, apuração fiscal ou demonstrações contábeis oficiais. As regras de cálculo e os componentes incluídos em cada indicador deverão ser documentados e aplicados de forma consistente.
