@@ -2,7 +2,7 @@
 
 - [x] 1.1 Revisar as especificações, o documento de decisões técnicas e os requisitos do projeto, verificando se as funcionalidades previstas estão documentadas.
 - [x] 1.2 Organizar a estrutura dos arquivos do projeto e confirmar que os arquivos necessários estão versionados no GitHub.
-- [ ] 1.3 Definir e documentar as variáveis de configuração necessárias para conectar o Streamlit ao Xano, verificando que credenciais não sejam armazenadas diretamente no código.
+- [x] 1.3 Definir e documentar as variáveis de configuração necessárias para conectar o Streamlit ao Xano, verificando que credenciais não sejam armazenadas diretamente no código.
 
 ## 2. Modelagem do banco de dados no Xano
 

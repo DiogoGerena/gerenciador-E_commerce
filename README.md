@@ -1,42 +1,143 @@
-# CodBar — Gerenciador de E-commerce
+# CodBar — Controle Financeiro e Estoque para E-commerce
 
-## Sobre o projeto
+## Objetivo
 
-O CodBar é um sistema de gerenciamento de estoque e acompanhamento financeiro para operações de e-commerce, desenvolvido como projeto acadêmico.
-
-O objetivo é centralizar o cadastro de produtos, fornecedores, entradas e movimentações de estoque, vendas e custos, permitindo acompanhar os resultados financeiros da operação.
-
-## Funcionalidades previstas
-
-- Cadastro e gerenciamento de produtos, categorias e fornecedores.
-- Controle de entradas e movimentações de estoque.
-- Cálculo do custo médio ponderado e do Custo das Mercadorias Vendidas (CMV).
-- Registro manual e importação de vendas por arquivos CSV e Excel.
-- Registro de custos de venda, como comissões, impostos, embalagens e fretes.
-- Cálculo de receita, resultado após custos e margem.
-- Dashboard com indicadores financeiros e de estoque.
-- Controle de acesso por perfil de usuário.
+O CodBar é um projeto acadêmico para apoiar o controle de produtos, estoque e informações financeiras de operações de e-commerce. A aplicação atual usa Streamlit como interface e o Xano como backend configurável.
 
 ## Tecnologias
 
-- **Python:** linguagem principal.
-- **Streamlit:** interface da aplicação.
-- **Xano:** backend, banco de dados, autenticação e APIs.
-- **Git e GitHub:** versionamento e colaboração.
-- **OpenSpec:** documentação e organização dos requisitos.
+- **Python** para a lógica da aplicação e integração HTTP.
+- **Streamlit** para a interface web.
+- **Xano** como backend de autenticação, dados e endpoints.
+- **Git** para controle de versão.
+- **OpenSpec** para especificações e acompanhamento das tarefas.
 
-## Estrutura da aplicação
+## Estado do projeto
 
-A aplicação será organizada para separar a interface, a comunicação com o backend, as configurações e a documentação do projeto.
+O desenvolvimento é incremental. Os itens abaixo distinguem implementação local de integração confirmada no backend.
 
-## Status
+### Implementado localmente e coberto por testes automatizados
 
-Projeto em fase de planejamento e preparação da estrutura. As funcionalidades serão implementadas e validadas progressivamente conforme as especificações documentadas em `openspec/changes/controle-financeiro-estoque/`.
+- Cliente Xano com configuração por variáveis de ambiente ou `st.secrets`, separando URLs de autenticação e recursos.
+- Fluxo de login que obtém o token e consulta `/auth/me`; normalização local dos perfis `Adm` e `aux.ecommerce`.
+- Sessão autenticada na interface e ação de logout local.
+- Pesquisa de produtos por nome, usando o endpoint de recursos `GET /product`.
+- Formulário local de cadastro com validação de nome, descrição, ID da categoria, estoque mínimo, preço e situação. O SKU é opcional. O cliente exclui `id` e custo de aquisição do payload.
+- Função `criar_produto()` que envia JSON para `POST /product` com o token Bearer da sessão. Os testes usam mocks e não criam registros reais.
+- Tratamento local de erros HTTP e conexão, com proteção para não exibir tokens ou credenciais.
 
-## Segurança
+Os testes do cliente não comprovam que o contrato de `POST /product` esteja compatível com a configuração atual do Xano.
 
-As credenciais e os segredos de acesso não devem ser armazenados diretamente no código-fonte nem enviados ao GitHub. A configuração da aplicação deverá utilizar variáveis de ambiente ou mecanismos seguros de configuração.
+### Pendências e limitações conhecidas
 
-## Execução
+- **Cadastro real de produtos:** o formulário e o cliente foram implementados, mas o payload ainda precisa ser confirmado contra os inputs reais de `POST /product`. Não há comprovação de criação bem-sucedida no Xano.
+- **Validação ponta a ponta:** login válido, consulta real de `/auth/me`, criação e consulta do produto criado dependem de credenciais autorizadas e do contrato ativo no Xano. Credenciais não são fornecidas neste README.
+- **Modelagem e recursos de negócio:** categorias, fornecedores, entradas e movimentações de estoque, vendas, cálculos financeiros e dashboards permanecem em desenvolvimento conforme as tarefas do OpenSpec.
+- **Marketplaces:** integração automática não está implementada.
+- **Contrato de listagem:** conforme configuração do Xano inspecionada para `GET /product`, a busca usa `name includes input:name`; `category_id` e `status` são condições adicionais. A interface atual pesquisa pelo nome e não promete listagem global.
+- O formulário de cadastro usa campos sustentados pela especificação e pelos nomes já usados na interface. A aceitação desses nomes, tipos, obrigatoriedade, valores de `status` e relacionamento de categoria precisa ser validada no endpoint remoto antes de considerar o cadastro integrado.
+- As tarefas pendentes e o estado completo estão em [`openspec/changes/controle-financeiro-estoque/tasks.md`](openspec/changes/controle-financeiro-estoque/tasks.md).
 
-As instruções de instalação, configuração e execução serão documentadas conforme a implementação da aplicação avançar.
+## Pré-requisitos
+
+- Windows com PowerShell.
+- Python 3 instalado e disponível pelo comando `py` ou `python`.
+- Acesso autorizado ao workspace Xano para usar a aplicação com backend.
+
+O repositório não contém um manifesto de dependências (`requirements.txt` ou `pyproject.toml`). As dependências usadas diretamente pela aplicação são Streamlit, pandas e requests.
+
+## Configuração do Xano
+
+O cliente reconhece estas configurações:
+
+- `XANO_API_URL`: base padrão/fallback.
+- `XANO_AUTH_URL`: base para `POST /auth/login` e `GET /auth/me`; se omitida, usa `XANO_API_URL`.
+- `XANO_RESOURCES_URL`: base para endpoints de negócio, como `/product`; se omitida, usa `XANO_API_URL`.
+- `XANO_API_TOKEN`: token opcional de configuração. O fluxo de login usa o token retornado pelo endpoint e o envia como Bearer nas chamadas autenticadas.
+
+Não coloque senhas, tokens ou URLs privadas em arquivos versionados. `.env.example` contém placeholders; o código atual não carrega `.env` automaticamente. Use uma das opções abaixo.
+
+### Opção A: Streamlit secrets
+
+Crie `.streamlit/secrets.toml` localmente, substituindo os placeholders pelas URLs do seu workspace Xano:
+
+```toml
+XANO_API_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_PADRAO"
+XANO_AUTH_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_AUTH"
+XANO_RESOURCES_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_RECURSOS"
+XANO_API_TOKEN = ""
+```
+
+O arquivo `.streamlit/secrets.toml` está ignorado pelo Git. Não compartilhe nem versione credenciais reais.
+
+### Opção B: variáveis de ambiente no PowerShell
+
+Defina os valores no terminal em que executará o Streamlit. Use as URLs fornecidas pelo seu workspace Xano; não cole valores secretos no código:
+
+```powershell
+$env:XANO_API_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_PADRAO"
+$env:XANO_AUTH_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_AUTH"
+$env:XANO_RESOURCES_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_RECURSOS"
+```
+
+`XANO_API_TOKEN` é opcional para o fluxo de login da aplicação. Se necessário no seu ambiente, configure-o somente no terminal ou em um secret local.
+
+## Instalação e execução no Windows PowerShell
+
+Na raiz do repositório:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install streamlit pandas requests
+```
+
+Configure o Xano usando uma das opções acima e inicie a interface:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/Home.py
+```
+
+## Testes
+
+Com o ambiente virtual ativado, execute os testes automatizados existentes:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_xano_config
+```
+
+Os testes de cadastro usam respostas simuladas para validar mapeamento, autenticação e validações locais. Eles não enviam produtos ao Xano e não substituem um teste autorizado de ponta a ponta.
+
+Para validar sintaxe dos módulos principais:
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile app/Home.py app/xano_client.py
+```
+
+## Estrutura principal
+
+```text
+app/
+  Home.py          Interface Streamlit, sessão e fluxos de produtos
+  Teste_Xano.py    Página auxiliar de teste da API
+  xano_client.py   Configuração, autenticação e chamadas ao Xano
+docs/
+  project-overview.md
+openspec/
+  changes/          Propostas, especificações e tarefas do projeto
+tests/
+  test_xano_config.py
+xano-workspace/
+  workspace/       Metadados/export local do workspace Xano
+.streamlit/
+  secrets.toml     Configuração local ignorada pelo Git
+.env.example       Exemplo de nomes de variáveis, sem credenciais reais
+README.md
+```
+
+## Próximos passos
+
+1. Confirmar no painel do Xano os inputs, tipos, campos obrigatórios, relacionamentos, permissões e resposta de `POST /product`.
+2. Validar o cadastro com uma conta autorizada e dados fictícios, sem alterar ou remover produtos reais.
+3. Verificar a consulta do produto criado e ajustar o mapeamento local somente conforme o contrato confirmado.
+4. Continuar as tarefas pendentes de modelagem e operações financeiras no OpenSpec.
