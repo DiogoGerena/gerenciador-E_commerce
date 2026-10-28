@@ -57,8 +57,17 @@ def get_xano_config():
         or _get_streamlit_secret("XANO_AUTH_URL")
         or base_url
     )
-    resources_base_url = (
-        os.getenv("XANO_RESOURCES_URL")
+    categories_base_url = (
+        os.getenv("XANO_CATEGORIES_URL")
+        or _get_streamlit_secret("XANO_CATEGORIES_URL")
+        or os.getenv("XANO_RESOURCES_URL")
+        or _get_streamlit_secret("XANO_RESOURCES_URL")
+        or base_url
+    )
+    products_base_url = (
+        os.getenv("XANO_PRODUCTS_URL")
+        or _get_streamlit_secret("XANO_PRODUCTS_URL")
+        or os.getenv("XANO_RESOURCES_URL")
         or _get_streamlit_secret("XANO_RESOURCES_URL")
         or base_url
     )
@@ -70,7 +79,9 @@ def get_xano_config():
     return {
         "base_url": base_url.rstrip("/"),
         "auth_base_url": auth_base_url.rstrip("/"),
-        "resources_base_url": resources_base_url.rstrip("/"),
+        "categories_base_url": categories_base_url.rstrip("/"),
+        "products_base_url": products_base_url.rstrip("/"),
+        "resources_base_url": categories_base_url.rstrip("/"),
         "token": token,
     }
 
@@ -183,11 +194,18 @@ def autenticar_usuario_resposta(payload):
 
 
 def xano_request(method, endpoint, token=None, **kwargs):
-    """Executa uma requisição à API do Xano."""
+    """Executa uma requisi??o ? API do Xano."""
     config = get_xano_config()
 
-    if isinstance(endpoint, str) and endpoint.startswith("/auth/"):
+    endpoint_str = str(endpoint or "")
+    lower_endpoint = endpoint_str.lower()
+
+    if lower_endpoint.startswith("/auth/"):
         base_url = config["auth_base_url"]
+    elif lower_endpoint.startswith("/category"):
+        base_url = config["categories_base_url"]
+    elif lower_endpoint.startswith("/product"):
+        base_url = config["products_base_url"]
     else:
         base_url = config["resources_base_url"]
 
@@ -245,31 +263,184 @@ def listar_produtos(token=None, *, name=None, category_id=None, status=None, **k
     return xano_request("GET", "/product", token=token, params=params)
 
 
+def extrair_categorias(payload):
+    """Extrai categorias ativas em um formato consistente para a interface."""
+    if isinstance(payload, list):
+        itens = payload
+    elif isinstance(payload, dict):
+        lista = None
+        for chave in ("categories", "data", "items", "results", "rows"):
+            valor = payload.get(chave)
+            if isinstance(valor, list):
+                lista = valor
+                break
+        itens = lista or []
+    else:
+        return []
+
+    categorias = []
+    for item in itens:
+        if not isinstance(item, dict):
+            continue
+
+        categoria_id = item.get("id")
+        nome = item.get("name")
+        status = item.get("status")
+
+        if categoria_id is None or nome is None:
+            continue
+
+        nome = str(nome).strip()
+        if not nome:
+            continue
+
+        if isinstance(status, str) and status.strip().lower() != "ativo":
+            continue
+
+        try:
+            categoria_id = int(categoria_id)
+        except (TypeError, ValueError):
+            continue
+
+        categorias.append({
+            "id": categoria_id,
+            "name": nome,
+            "status": status,
+        })
+
+    return categorias
+
+
+def listar_categorias_ativas(token=None):
+    """Busca apenas as categorias ativas confirmadas pelo contrato do Xano."""
+    payload = xano_request(
+        "GET",
+        "/category",
+        token=token,
+        params={"status": "ativo"},
+    )
+
+    categorias = extrair_categorias(payload)
+    if not categorias:
+        raise ValueError("Nenhuma categoria ativa disponível para seleção.")
+
+    return categorias
+
+
+def resolver_categoria_por_nome(categorias, nome_categoria):
+    """Resolve o ID da categoria a partir do nome selecionado na interface."""
+    if not isinstance(categorias, list):
+        raise ValueError("Lista de categorias inválida.")
+
+    nome = str(nome_categoria or "").strip()
+    if not nome:
+        raise ValueError("Selecione uma categoria válida.")
+
+    for categoria in categorias:
+        if not isinstance(categoria, dict):
+            continue
+        if str(categoria.get("name", "")).strip() == nome:
+            categoria_id = categoria.get("id")
+            try:
+                return int(categoria_id)
+            except (TypeError, ValueError):
+                raise ValueError(f"Categoria inválida: {nome}.")
+
+    raise ValueError(f"Categoria não encontrada: {nome}.")
+
+
+def extrair_id_produto(payload):
+    """Extrai um identificador de produto quando a resposta do Xano o incluir."""
+    if payload is None:
+        return None
+
+    if isinstance(payload, list):
+        for item in payload:
+            id_produto = extrair_id_produto(item)
+            if id_produto is not None:
+                return id_produto
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    for chave in ("id", "product_id", "produto_id"):
+        valor = payload.get(chave)
+        if isinstance(valor, bool):
+            continue
+        if isinstance(valor, (int, float)) and math.isfinite(valor):
+            return int(valor)
+        if isinstance(valor, str):
+            valor = valor.strip()
+            if valor and valor.lstrip("-").isdigit():
+                return int(valor)
+
+    for chave in ("data", "product", "produto", "result", "item"):
+        id_produto = extrair_id_produto(payload.get(chave))
+        if id_produto is not None:
+            return id_produto
+
+    return None
+
+
+def confirmar_produto_criado(payload):
+    """Valida se a resposta do Xano confirma a criação do produto."""
+    if payload is None:
+        return False
+
+    if isinstance(payload, (str, bytes)):
+        return False
+
+    if isinstance(payload, list):
+        return any(confirmar_produto_criado(item) for item in payload)
+
+    if not isinstance(payload, dict):
+        return False
+
+    id_produto = extrair_id_produto(payload)
+    if id_produto is not None:
+        return True
+
+    status = payload.get("status")
+    if isinstance(status, str):
+        status_normalizado = status.strip().lower()
+        if status_normalizado in {
+            "success",
+            "ok",
+            "created",
+            "created_successfully",
+        }:
+            return any(
+                chave in payload
+                for chave in ("data", "product", "produto", "result")
+            )
+
+    return False
+
+
 def mapear_payload_produto(
     *,
     name,
-    description,
+    description="",
     category_id,
     min_stock,
     sale_price,
-    status,
+    status=None,
     sku="",
 ):
-    """Valida e mapeia os campos do cadastro documentados localmente.
+    """Valida e mapeia os campos do cadastro conforme o contrato do Xano.
 
-    A correspondência entre estes nomes e os inputs do POST remoto ainda precisa
-    ser confirmada no painel do Xano antes de considerar a integração concluída.
+    A descrição é opcional e deve ser enviada como texto quando houver valor; o
+    backend define o status padrão do produto e não exige que o cliente envie
+    o campo `status` no payload de criação.
     """
     name = str(name or "").strip()
     description = str(description or "").strip()
-    status = str(status or "").strip()
+    if status is not None:
+        status = str(status).strip()
 
     if not name:
         raise ValueError("Informe o nome do produto.")
-    if not description:
-        raise ValueError("Informe a descrição do produto.")
-    if not status:
-        raise ValueError("Informe a situação do produto.")
     if isinstance(category_id, bool) or not isinstance(category_id, int):
         raise ValueError("A categoria deve ser informada por um ID inteiro.")
     if category_id < 1:
@@ -293,7 +464,6 @@ def mapear_payload_produto(
         "category_id": category_id,
         "min_stock": min_stock,
         "sale_price": float(sale_price),
-        "status": status,
     }
 
     sku = str(sku or "").strip()
@@ -306,11 +476,11 @@ def criar_produto(
     token,
     *,
     name,
-    description,
+    description="",
     category_id,
     min_stock,
     sale_price,
-    status,
+    status=None,
     sku="",
 ):
     """Envia o cadastro de produto ao endpoint existente do Xano."""
@@ -327,12 +497,17 @@ def criar_produto(
         sku=sku,
     )
 
-    return xano_request(
+    resposta = xano_request(
         "POST",
         "/product",
         token=token,
         json=payload,
     )
+
+    if not confirmar_produto_criado(resposta):
+        raise ValueError("O Xano não confirmou a criação do produto.")
+
+    return resposta
 
 
 def xano_login(email, password):

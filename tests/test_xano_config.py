@@ -111,6 +111,40 @@ class XanoConfigTestCase(unittest.TestCase):
             "https://example.test/api:ZQDs0IzN/product",
         )
 
+    def test_builds_category_url_for_active_categories_with_expected_group(self):
+        with patch.object(
+            xano_client.st,
+            "secrets",
+            {
+                "XANO_API_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                "XANO_RESOURCES_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                "XANO_AUTH_URL": "https://x8ki-letl-twmt.n7.xano.io/api:ZQDs0IzN",
+                "XANO_API_TOKEN": "",
+            },
+            create=True,
+        ):
+            with patch("app.xano_client.requests.request") as mock_request:
+                mock_request.return_value.status_code = 200
+                mock_request.return_value.content = b'[{"id":2,"name":"Informatica","status":"ativo"}]'
+                mock_request.return_value.json.return_value = [
+                    {"id": 2, "name": "Informatica", "status": "ativo"}
+                ]
+
+                xano_client.listar_categorias_ativas(token="jwt-token")
+
+        self.assertEqual(
+            mock_request.call_args.kwargs["url"],
+            "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF/category",
+        )
+        self.assertEqual(
+            mock_request.call_args.kwargs["params"],
+            {"status": "ativo"},
+        )
+        self.assertEqual(
+            mock_request.call_args.kwargs["headers"]["Authorization"],
+            "Bearer jwt-token",
+        )
+
     def test_uses_separate_auth_and_resource_bases_when_defined(self):
         os.environ["XANO_API_URL"] = "https://example.test/api:default"
         os.environ["XANO_AUTH_URL"] = "https://example.test/api:auth"
@@ -122,6 +156,87 @@ class XanoConfigTestCase(unittest.TestCase):
         self.assertEqual(config["auth_base_url"], "https://example.test/api:auth")
         self.assertEqual(config["resources_base_url"], "https://example.test/api:resources")
         self.assertEqual(config["base_url"], "https://example.test/api:default")
+
+    def test_routes_use_the_expected_operation_specific_base_urls(self):
+        with patch.dict(
+            os.environ,
+            {
+                "XANO_API_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                "XANO_AUTH_URL": "https://x8ki-letl-twmt.n7.xano.io/api:ZQDs0IzN",
+                "XANO_CATEGORIES_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                "XANO_PRODUCTS_URL": "https://x8ki-letl-twmt.n7.xano.io/api:4FsHXYfS",
+                "XANO_API_TOKEN": "token",
+            },
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {
+                    "XANO_API_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                    "XANO_AUTH_URL": "https://x8ki-letl-twmt.n7.xano.io/api:ZQDs0IzN",
+                    "XANO_CATEGORIES_URL": "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF",
+                    "XANO_PRODUCTS_URL": "https://x8ki-letl-twmt.n7.xano.io/api:4FsHXYfS",
+                    "XANO_API_TOKEN": "token",
+                },
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    mock_request.return_value.status_code = 200
+                    mock_request.return_value.content = b"{}"
+                    mock_request.return_value.json.return_value = {}
+
+                    xano_client.xano_request(
+                        "POST",
+                        "/auth/login",
+                        token="jwt-login",
+                        json={"email": "user@test.com", "password": "secret"},
+                    )
+                    xano_client.xano_request(
+                        "GET",
+                        "/auth/me",
+                        token="jwt-me",
+                    )
+                    xano_client.xano_request(
+                        "GET",
+                        "/category",
+                        token="jwt-category",
+                        params={"status": "ativo"},
+                    )
+                    xano_client.xano_request(
+                        "POST",
+                        "/product",
+                        token="jwt-product",
+                        json={"name": "Produto", "category_id": 2},
+                    )
+
+        expected_urls = [
+            "https://x8ki-letl-twmt.n7.xano.io/api:ZQDs0IzN/auth/login",
+            "https://x8ki-letl-twmt.n7.xano.io/api:ZQDs0IzN/auth/me",
+            "https://x8ki-letl-twmt.n7.xano.io/api:pi5tdncF/category",
+            "https://x8ki-letl-twmt.n7.xano.io/api:4FsHXYfS/product",
+        ]
+
+        self.assertEqual(
+            [call.kwargs["url"] for call in mock_request.call_args_list],
+            expected_urls,
+        )
+        self.assertEqual(
+            mock_request.call_args_list[0].kwargs["headers"]["Authorization"],
+            "Bearer jwt-login",
+        )
+        self.assertEqual(
+            mock_request.call_args_list[2].kwargs["headers"]["Authorization"],
+            "Bearer jwt-category",
+        )
+        self.assertEqual(
+            mock_request.call_args_list[3].kwargs["headers"]["Authorization"],
+            "Bearer jwt-product",
+        )
+        self.assertEqual(
+            mock_request.call_args_list[2].kwargs["params"],
+            {"status": "ativo"},
+        )
 
     def test_auth_urls_fall_back_to_default_base_when_not_defined(self):
         os.environ["XANO_API_URL"] = "https://example.test/api:default"
@@ -185,7 +300,7 @@ class XanoConfigTestCase(unittest.TestCase):
             "Perfil do usuário ausente ou não reconhecido.",
         )
 
-    def test_create_product_posts_spec_fields_as_json_with_bearer_token(self):
+    def test_create_product_posts_contract_fields_without_status(self):
         with patch.dict(
             os.environ,
             {"XANO_API_URL": "https://example.test/api:resources"},
@@ -226,7 +341,6 @@ class XanoConfigTestCase(unittest.TestCase):
                 "category_id": 2,
                 "min_stock": 0,
                 "sale_price": 12.5,
-                "status": "ativo",
                 "sku": "",
             },
         )
@@ -235,13 +349,44 @@ class XanoConfigTestCase(unittest.TestCase):
             "Bearer user-token",
         )
 
+    def test_create_product_allows_empty_description_and_sends_it_in_payload(self):
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    mock_request.return_value.status_code = 201
+                    mock_request.return_value.content = b'{"id": 12}'
+                    mock_request.return_value.json.return_value = {"id": 12}
+
+                    result = xano_client.criar_produto(
+                        token="user-token",
+                        name="Produto sem descrição",
+                        description="",
+                        category_id=2,
+                        min_stock=0,
+                        sale_price=12.5,
+                    )
+
+        self.assertEqual(result, {"id": 12})
+        self.assertEqual(
+            mock_request.call_args.kwargs["json"]["description"],
+            "",
+        )
+
     def test_create_product_rejects_invalid_fields_before_request(self):
         invalid_products = (
-            {"name": " ", "description": "Desc", "category_id": 1, "min_stock": 0, "sale_price": 12.5, "status": "ativo"},
-            {"name": "Produto", "description": "Desc", "category_id": 0, "min_stock": 0, "sale_price": 12.5, "status": "ativo"},
-            {"name": "Produto", "description": "Desc", "category_id": 1, "min_stock": -1, "sale_price": 12.5, "status": "ativo"},
-            {"name": "Produto", "description": "Desc", "category_id": 1, "min_stock": 0, "sale_price": float("nan"), "status": "ativo"},
-            {"name": "Produto", "description": "Desc", "category_id": 1, "min_stock": 0, "sale_price": 12.5, "status": "desconhecido"},
+            {"name": " ", "description": "Desc", "category_id": 1, "min_stock": 0, "sale_price": 12.5},
+            {"name": "Produto", "description": "Desc", "category_id": 0, "min_stock": 0, "sale_price": 12.5},
+            {"name": "Produto", "description": "Desc", "category_id": 1, "min_stock": -1, "sale_price": 12.5},
+            {"name": "Produto", "description": "Desc", "category_id": 1, "min_stock": 0, "sale_price": float("nan")},
         )
 
         with patch("app.xano_client.requests.request") as mock_request:
@@ -251,6 +396,137 @@ class XanoConfigTestCase(unittest.TestCase):
                         xano_client.criar_produto(token="user-token", **fields)
 
         mock_request.assert_not_called()
+
+    def test_create_product_rejects_inconclusive_backend_response(self):
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    for payload in (None, {}, {"status": "success"}, {"message": "ok"}):
+                        mock_request.return_value.status_code = 200
+                        mock_request.return_value.content = b"" if payload is None else b"{}"
+                        mock_request.return_value.json.return_value = payload
+
+                        with self.subTest(payload=payload):
+                            with self.assertRaisesRegex(ValueError, "confirmou"):
+                                xano_client.criar_produto(
+                                    token="user-token",
+                                    name="Produto",
+                                    description="Descrição",
+                                    category_id=1,
+                                    min_stock=0,
+                                    sale_price=12.5,
+                                )
+
+    def test_create_product_accepts_valid_confirmation_payloads(self):
+        payloads = (
+            {"id": 15},
+            {"data": {"id": 16}},
+            {"product": {"id": 17}},
+            {"status": "success", "data": {"id": 18}},
+        )
+
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    for payload in payloads:
+                        mock_request.return_value.status_code = 201
+                        mock_request.return_value.content = b"{}"
+                        mock_request.return_value.json.return_value = payload
+
+                        with self.subTest(payload=payload):
+                            result = xano_client.criar_produto(
+                                token="user-token",
+                                name="Produto",
+                                description="Descrição",
+                                category_id=1,
+                                min_stock=0,
+                                sale_price=12.5,
+                            )
+                            self.assertEqual(result, payload)
+
+    def test_list_categories_uses_active_status_and_validates_payload(self):
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    mock_request.return_value.status_code = 200
+                    mock_request.return_value.content = b'[{"id": 2, "name": "Informatica", "status": "ativo"}, {"id": 3, "name": "Eletronicos", "status": "inativo"}, {"id": 4, "name": "", "status": "ativo"}]'
+                    mock_request.return_value.json.return_value = [
+                        {"id": 2, "name": "Informatica", "status": "ativo"},
+                        {"id": 3, "name": "Eletronicos", "status": "inativo"},
+                        {"id": 4, "name": "", "status": "ativo"},
+                    ]
+
+                    categorias = xano_client.listar_categorias_ativas(token="abc123")
+
+        self.assertEqual(
+            categorias,
+            [{"id": 2, "name": "Informatica", "status": "ativo"}],
+        )
+        self.assertEqual(
+            mock_request.call_args.kwargs["params"],
+            {"status": "ativo"},
+        )
+        self.assertTrue(
+            mock_request.call_args.kwargs["headers"]["Authorization"].startswith("Bearer ")
+        )
+
+    def test_category_name_lookup_returns_real_id(self):
+        categorias = [
+            {"id": 2, "name": "Informatica", "status": "ativo"},
+            {"id": 7, "name": "Móveis", "status": "ativo"},
+        ]
+
+        self.assertEqual(
+            xano_client.resolver_categoria_por_nome(categorias, "Informatica"),
+            2,
+        )
+
+    def test_invalid_category_response_raises_value_error(self):
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    mock_request.return_value.status_code = 200
+                    mock_request.return_value.content = b"{}"
+                    mock_request.return_value.json.return_value = {}
+
+                    with self.assertRaisesRegex(ValueError, "Nenhuma categoria ativa"):
+                        xano_client.listar_categorias_ativas(token="abc123")
 
     def test_product_search_helper_only_sends_name_when_explicitly_informed(self):
         with patch.dict(
@@ -338,6 +614,33 @@ class XanoConfigTestCase(unittest.TestCase):
                                 sale_price=12.5,
                                 status="ativo",
                             )
+
+    def test_connection_error_is_propagated(self):
+        with patch.dict(
+            os.environ,
+            {"XANO_API_URL": "https://example.test/api:resources"},
+            clear=True,
+        ):
+            with patch.object(
+                xano_client.st,
+                "secrets",
+                {"XANO_API_URL": "https://example.test/api:resources"},
+                create=True,
+            ):
+                with patch("app.xano_client.requests.request") as mock_request:
+                    mock_request.side_effect = xano_client.requests.RequestException(
+                        "connection failed"
+                    )
+
+                    with self.assertRaises(xano_client.requests.RequestException):
+                        xano_client.criar_produto(
+                            token="abc123",
+                            name="Produto",
+                            description="Descrição",
+                            category_id=1,
+                            min_stock=0,
+                            sale_price=12.5,
+                        )
 
     def test_invalid_streamlit_secrets_object_raises_runtime_error(self):
         with patch.object(

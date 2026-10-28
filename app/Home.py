@@ -4,7 +4,14 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from xano_client import criar_produto, listar_produtos, xano_login
+from xano_client import (
+    criar_produto,
+    extrair_id_produto,
+    listar_categorias_ativas,
+    listar_produtos,
+    resolver_categoria_por_nome,
+    xano_login,
+)
 
 
 st.set_page_config(
@@ -263,6 +270,26 @@ else:
         st.success(mensagem_cadastro)
 
     st.subheader("Cadastrar produto")
+    categorias_disponiveis = st.session_state.get("categorias_produto_ativas")
+    if categorias_disponiveis is None:
+        try:
+            categorias_disponiveis = listar_categorias_ativas(
+                token=st.session_state["auth_token"]
+            )
+            st.session_state["categorias_produto_ativas"] = categorias_disponiveis
+        except requests.HTTPError as erro:
+            exibir_erro_api(erro)
+            categorias_disponiveis = []
+        except requests.RequestException:
+            st.error("Falha de conexão ao carregar categorias do Xano.")
+            categorias_disponiveis = []
+        except ValueError as erro:
+            st.warning(str(erro))
+            categorias_disponiveis = []
+        except Exception:
+            st.error("Ocorreu um erro inesperado ao carregar as categorias.")
+            categorias_disponiveis = []
+
     with st.form("cadastro_produto"):
         nome_produto = st.text_input("Nome", key="cadastro_nome_produto")
         descricao_produto = st.text_area(
@@ -273,14 +300,26 @@ else:
             "SKU (opcional)",
             key="cadastro_sku_produto",
         )
-        categoria_produto = st.number_input(
-            "ID da categoria",
-            min_value=0,
-            value=0,
-            step=1,
-            format="%d",
-            key="cadastro_categoria_produto",
-        )
+        if categorias_disponiveis:
+            nomes_categorias = [categoria["name"] for categoria in categorias_disponiveis]
+            nome_categoria_produto = st.selectbox(
+                "Categoria",
+                options=nomes_categorias,
+                key="cadastro_nome_categoria_produto",
+            )
+            categoria_produto_id = resolver_categoria_por_nome(
+                categorias_disponiveis,
+                nome_categoria_produto,
+            )
+        else:
+            st.warning("Nenhuma categoria ativa disponível no Xano.")
+            categoria_produto_id = None
+            st.text_input(
+                "Categoria",
+                value="Indisponível",
+                disabled=True,
+                key="cadastro_categoria_indisponivel",
+            )
         estoque_minimo_produto = st.number_input(
             "Estoque mínimo",
             min_value=0,
@@ -296,77 +335,72 @@ else:
             step=0.01,
             key="cadastro_preco_venda_produto",
         )
-        situacao_produto = st.text_input(
-            "Situação",
-            value="ativo",
-            key="cadastro_situacao_produto",
-        )
         cadastrar = st.form_submit_button("Cadastrar produto")
 
     if cadastrar:
-        dados_produto = {
-            "name": nome_produto,
-            "description": descricao_produto,
-            "category_id": int(categoria_produto),
-            "min_stock": int(estoque_minimo_produto),
-            "sale_price": float(preco_venda_produto),
-            "status": situacao_produto,
-            "sku": sku_produto,
-        }
-        fingerprint_cadastro = tuple(sorted(dados_produto.items()))
-
-        if st.session_state.get("cadastro_produto_enviando"):
-            st.warning("Um cadastro já está sendo enviado.")
-        elif (
-            st.session_state.get("ultimo_cadastro_produto")
-            == fingerprint_cadastro
-        ):
+        if categoria_produto_id is None:
             st.warning(
-                "Este mesmo cadastro já foi enviado com sucesso nesta sessão. "
-                "Altere os dados para iniciar outro cadastro."
+                "Não foi possível cadastrar: nenhuma categoria ativa está disponível."
             )
         else:
-            st.session_state["cadastro_produto_enviando"] = True
-            try:
-                with st.spinner("Enviando cadastro ao Xano..."):
-                    produto_criado = criar_produto(
-                        token=st.session_state["auth_token"],
-                        **dados_produto,
+            dados_produto = {
+                "name": nome_produto,
+                "description": descricao_produto,
+                "category_id": int(categoria_produto_id),
+                "min_stock": int(estoque_minimo_produto),
+                "sale_price": float(preco_venda_produto),
+                "sku": sku_produto,
+            }
+            fingerprint_cadastro = tuple(sorted(dados_produto.items()))
+
+            if st.session_state.get("cadastro_produto_enviando"):
+                st.warning("Um cadastro já está sendo enviado.")
+            elif (
+                st.session_state.get("ultimo_cadastro_produto")
+                == fingerprint_cadastro
+            ):
+                st.warning(
+                    "Este mesmo cadastro já foi enviado com sucesso nesta sessão. "
+                    "Altere os dados para iniciar outro cadastro."
+                )
+            else:
+                st.session_state["cadastro_produto_enviando"] = True
+                try:
+                    with st.spinner("Enviando cadastro ao Xano..."):
+                        produto_criado = criar_produto(
+                            token=st.session_state["auth_token"],
+                            **dados_produto,
+                        )
+
+                    id_produto = extrair_id_produto(produto_criado)
+                    mensagem = "Produto cadastrado com sucesso no Xano."
+                    if id_produto is not None:
+                        mensagem += f" ID: {id_produto}."
+
+                    st.session_state["ultimo_cadastro_produto"] = (
+                        fingerprint_cadastro
                     )
+                    st.session_state["mensagem_cadastro_produto"] = mensagem
+                    st.session_state["nome_filtro_produto"] = str(
+                        dados_produto["name"]
+                    ).strip()
+                    st.session_state["buscar_produto_cadastrado"] = True
+                    st.rerun()
 
-                id_produto = (
-                    produto_criado.get("id")
-                    if isinstance(produto_criado, dict)
-                    else None
-                )
-                mensagem = "Produto cadastrado com sucesso no Xano."
-                if id_produto is not None:
-                    mensagem += f" ID: {id_produto}."
+                except ValueError as erro:
+                    st.warning(str(erro))
 
-                st.session_state["ultimo_cadastro_produto"] = (
-                    fingerprint_cadastro
-                )
-                st.session_state["mensagem_cadastro_produto"] = mensagem
-                st.session_state["nome_filtro_produto"] = str(
-                    dados_produto["name"]
-                ).strip()
-                st.session_state["buscar_produto_cadastrado"] = True
-                st.rerun()
+                except requests.HTTPError as erro:
+                    exibir_erro_api(erro)
 
-            except ValueError as erro:
-                st.warning(str(erro))
+                except requests.RequestException:
+                    st.error("Falha de conexão ao cadastrar o produto no Xano.")
 
-            except requests.HTTPError as erro:
-                exibir_erro_api(erro)
+                except Exception:
+                    st.error("Ocorreu um erro inesperado ao cadastrar o produto.")
 
-            except requests.RequestException:
-                st.error("Falha de conexão ao cadastrar o produto no Xano.")
-
-            except Exception:
-                st.error("Ocorreu um erro inesperado ao cadastrar o produto.")
-
-            finally:
-                st.session_state["cadastro_produto_enviando"] = False
+                finally:
+                    st.session_state["cadastro_produto_enviando"] = False
 
     # Pesquisa somente pelo nome do produto
     with st.form("filtro_produtos"):
