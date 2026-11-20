@@ -25,6 +25,10 @@ O desenvolvimento é incremental. Os itens abaixo distinguem implementação loc
 - Formulário local de cadastro com validação de nome, descrição, ID da categoria, estoque mínimo, preço e situação. O SKU é opcional. O cliente exclui `id` e custo de aquisição do payload.
 - Função `criar_produto()` que envia JSON para `POST /product` com o token Bearer da sessão. Os testes usam mocks e não criam registros reais.
 - Tratamento local de erros HTTP e conexão, com proteção para não exibir tokens ou credenciais.
+- Integração mockada da seção de estoque: visão geral, entradas paginadas, kardex, ajustes, perdas/avarias e devoluções.
+- Integração mockada do módulo de vendas: registro com UUID v4, histórico paginado, filtros e detalhes.
+- Preservação do payload e da chave em operações de venda inconclusivas, sem geração automática de nova chave.
+- Operações administrativas de estoque são ocultadas para perfis operacionais; o backend continua sendo a autoridade das permissões.
 
 Os testes do cliente não comprovam que o contrato de `POST /product` esteja compatível com a configuração atual do Xano.
 
@@ -32,7 +36,10 @@ Os testes do cliente não comprovam que o contrato de `POST /product` esteja com
 
 - **Cadastro real de produtos:** o formulário e o cliente foram implementados, mas o payload ainda precisa ser confirmado contra os inputs reais de `POST /product`. Não há comprovação de criação bem-sucedida no Xano.
 - **Validação ponta a ponta:** login válido, consulta real de `/auth/me`, criação e consulta do produto criado dependem de credenciais autorizadas e do contrato ativo no Xano. Credenciais não são fornecidas neste README.
-- **Modelagem e recursos de negócio:** categorias, fornecedores, entradas e movimentações de estoque, vendas, cálculos financeiros e dashboards permanecem em desenvolvimento conforme as tarefas do OpenSpec.
+- **Validação real de estoque:** os endpoints de estoque foram integrados conforme os contratos fornecidos, mas dependem de homologação autorizada no Xano.
+- **Devolução de cliente:** a interface usa `reference_id` para identificar a venda original e não inventa `sale_item_id`; a relação exata do item vendido deve ser validada no endpoint real.
+- **Validação real de vendas:** os mocks cobrem o cliente e a interface, mas `POST /sale`, `GET /sale` e `GET /sale/{id}` dependem de homologação autorizada no Xano.
+- **Dashboard financeiro:** os indicadores são consultados em tempo real por `GET /sale/metrics`, com filtros de canal, status e período. A disponibilidade ponta a ponta depende da publicação desse endpoint no Xano; enquanto estiver indisponível, a interface apresenta o erro sem substituir os dados por valores zerados. Não há gráficos históricos, pois o endpoint agregado não fornece séries temporais.
 - **Marketplaces:** integração automática não está implementada.
 - **Contrato de listagem:** conforme configuração do Xano inspecionada para `GET /product`, a busca usa `name includes input:name`; `category_id` e `status` são condições adicionais. A interface atual pesquisa pelo nome e não promete listagem global.
 - O formulário de cadastro usa campos sustentados pela especificação e pelos nomes já usados na interface. A aceitação desses nomes, tipos, obrigatoriedade, valores de `status` e relacionamento de categoria precisa ser validada no endpoint remoto antes de considerar o cadastro integrado.
@@ -44,7 +51,7 @@ Os testes do cliente não comprovam que o contrato de `POST /product` esteja com
 - Python 3 instalado e disponível pelo comando `py` ou `python`.
 - Acesso autorizado ao workspace Xano para usar a aplicação com backend.
 
-O repositório não contém um manifesto de dependências (`requirements.txt` ou `pyproject.toml`). As dependências usadas diretamente pela aplicação são Streamlit, pandas e requests.
+O repositório declara as dependências diretamente usadas pela aplicação em `requirements.txt`: Streamlit, pandas e requests.
 
 ## Configuração do Xano
 
@@ -53,6 +60,12 @@ O cliente reconhece estas configurações:
 - `XANO_API_URL`: base padrão/fallback.
 - `XANO_AUTH_URL`: base para `POST /auth/login` e `GET /auth/me`; se omitida, usa `XANO_API_URL`.
 - `XANO_RESOURCES_URL`: base para endpoints de negócio, como `/product`; se omitida, usa `XANO_API_URL`.
+- `XANO_CATEGORIES_URL`: base para endpoints de categorias.
+- `XANO_PRODUCTS_URL`: base para endpoints de produtos.
+- `XANO_SUPPLIERS_URL`: base para endpoints de fornecedores.
+- `XANO_STOCK_ENTRIES_URL`: base para endpoints de entradas de estoque.
+- `XANO_STOCK_MOVEMENTS_URL`: base para endpoints de movimentações de estoque.
+- `XANO_SALES_URL`: base para endpoints de vendas.
 - `XANO_API_TOKEN`: token opcional de configuração. O fluxo de login usa o token retornado pelo endpoint e o envia como Bearer nas chamadas autenticadas.
 
 Não coloque senhas, tokens ou URLs privadas em arquivos versionados. `.env.example` contém placeholders; o código atual não carrega `.env` automaticamente. Use uma das opções abaixo.
@@ -65,6 +78,7 @@ Crie `.streamlit/secrets.toml` localmente, substituindo os placeholders pelas UR
 XANO_API_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_PADRAO"
 XANO_AUTH_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_AUTH"
 XANO_RESOURCES_URL = "https://SEU-DOMINIO.xano.io/api:GRUPO_RECURSOS"
+XANO_SALES_URL = "https://SEU-DOMINIO.xano.io/api:EjdVpi9b"
 XANO_API_TOKEN = ""
 ```
 
@@ -89,7 +103,7 @@ Na raiz do repositório:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install streamlit pandas requests
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 Configure o Xano usando uma das opções acima e inicie a interface:
@@ -98,12 +112,14 @@ Configure o Xano usando uma das opções acima e inicie a interface:
 .\.venv\Scripts\python.exe -m streamlit run app/Home.py
 ```
 
+Após autenticar, selecione **Dashboard**. A consulta usa `XANO_SALES_URL` e o token da sessão; configure a base do grupo Sales e confirme que `GET /sale/metrics` está publicado no Xano para validar os indicadores reais.
+
 ## Testes
 
 Com o ambiente virtual ativado, execute os testes automatizados existentes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_xano_config
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
 Os testes de cadastro usam respostas simuladas para validar mapeamento, autenticação e validações locais. Eles não enviam produtos ao Xano e não substituem um teste autorizado de ponta a ponta.
