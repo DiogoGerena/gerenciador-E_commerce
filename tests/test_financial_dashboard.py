@@ -9,6 +9,7 @@ import requests
 from streamlit.testing.v1 import AppTest
 
 import app.xano_client as xano_client
+import app.erp_modules as erp_modules
 
 
 class FinancialDashboardTestCase(unittest.TestCase):
@@ -49,7 +50,7 @@ class FinancialDashboardTestCase(unittest.TestCase):
 
         with patch.dict(sys.modules, {"xano_client": xano_client}):
             with patch.object(
-                xano_client,
+                erp_modules,
                 "consultar_metricas_vendas",
                 return_value=metricas_sem_vendas,
             ) as consultar:
@@ -65,12 +66,16 @@ class FinancialDashboardTestCase(unittest.TestCase):
                 self.assertEqual(app.metric[2].value, "R$ 0,00")
                 self.assertEqual(app.metric[8].value, "—")
 
-                app.session_state["sale_filter_channel"] = "loja"
-                app.session_state["sale_filter_status"] = "confirmada"
-                app.session_state["sale_filter_start"] = date(2026, 11, 1)
-                app.session_state["sale_filter_end"] = date(2026, 11, 20)
+                app.text_input(key="dashboard_sales_channel").set_value("loja")
+                app.text_input(key="dashboard_sales_status").set_value("confirmada")
+                app.date_input(key="dashboard_start_date").set_value(
+                    date(2026, 11, 1)
+                )
+                app.date_input(key="dashboard_end_date").set_value(
+                    date(2026, 11, 20)
+                )
                 consultar.return_value = metricas_reais
-                app.run()
+                app.form_submit_button(key="dashboard_refresh").click().run()
 
                 self.assertFalse(app.exception)
                 self.assertEqual(
@@ -90,7 +95,7 @@ class FinancialDashboardTestCase(unittest.TestCase):
                 consultar.side_effect = requests.ConnectionError(
                     "serviço indisponível"
                 )
-                app.run()
+                app.form_submit_button(key="dashboard_refresh").click().run()
 
                 self.assertFalse(app.exception)
                 self.assertTrue(app.error)

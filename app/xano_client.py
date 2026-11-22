@@ -1,12 +1,40 @@
 import math
 import os
+import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 import streamlit as st
+from dotenv import load_dotenv
+
+try:
+    from app.sale_dates import sale_date_to_unix_milliseconds
+except ModuleNotFoundError:  # pragma: no cover - compatibilidade com execução direta
+    from sale_dates import sale_date_to_unix_milliseconds
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOTENV_PATH = PROJECT_ROOT / ".env"
+
+
+def _load_project_environment():
+    """Carrega o .env da raiz sem sobrescrever o ambiente do processo."""
+    load_dotenv(dotenv_path=DOTENV_PATH, override=False)
+
+
+_load_project_environment()
+
+
+STOCK_ENTRY_URL = (
+    "https://x8ki-letl-twmt.n7.xano.io/api:stock-entries/stock-entry"
+)
+SUPPLIERS_BASE_URL = "https://x8ki-letl-twmt.n7.xano.io/api:-ryuPWna"
+SUPPLIERS_URL = f"{SUPPLIERS_BASE_URL}/supplier"
+SALES_GROUP_ID = "EjdVpi9b"
 
 
 def _build_api_url(base_url, endpoint):
@@ -77,25 +105,28 @@ def get_xano_config():
     suppliers_base_url = (
         os.getenv("XANO_SUPPLIERS_URL")
         or _get_streamlit_secret("XANO_SUPPLIERS_URL")
-        or os.getenv("XANO_RESOURCES_URL")
-        or _get_streamlit_secret("XANO_RESOURCES_URL")
-        or base_url
+        or SUPPLIERS_BASE_URL
     )
     stock_entries_base_url = (
         os.getenv("XANO_STOCK_ENTRIES_URL")
         or _get_streamlit_secret("XANO_STOCK_ENTRIES_URL")
-        or base_url
+        or STOCK_ENTRY_URL
     )
     stock_movements_base_url = (
         os.getenv("XANO_STOCK_MOVEMENTS_URL")
         or _get_streamlit_secret("XANO_STOCK_MOVEMENTS_URL")
-        or base_url
     )
     sales_base_url = (
         os.getenv("XANO_SALES_URL")
         or _get_streamlit_secret("XANO_SALES_URL")
-        or base_url
     )
+    if not sales_base_url and base_url:
+        parsed_base_url = urlparse(base_url)
+        if parsed_base_url.scheme and parsed_base_url.netloc:
+            sales_base_url = (
+                f"{parsed_base_url.scheme}://{parsed_base_url.netloc}"
+                f"/api:{SALES_GROUP_ID}"
+            )
     token = os.getenv("XANO_API_TOKEN") or _get_streamlit_secret("XANO_API_TOKEN")
 
     if not base_url:
@@ -107,9 +138,15 @@ def get_xano_config():
         "categories_base_url": categories_base_url.rstrip("/"),
         "products_base_url": products_base_url.rstrip("/"),
         "suppliers_base_url": suppliers_base_url.rstrip("/"),
-        "stock_entries_base_url": stock_entries_base_url.rstrip("/"),
-        "stock_movements_base_url": stock_movements_base_url.rstrip("/"),
-        "sales_base_url": sales_base_url.rstrip("/"),
+        "stock_entries_base_url": (
+            stock_entries_base_url.rstrip("/") if stock_entries_base_url else None
+        ),
+        "stock_movements_base_url": (
+            stock_movements_base_url.rstrip("/")
+            if stock_movements_base_url
+            else None
+        ),
+        "sales_base_url": sales_base_url.rstrip("/") if sales_base_url else None,
         "resources_base_url": categories_base_url.rstrip("/"),
         "token": token,
     }
@@ -238,14 +275,15 @@ def autenticar_usuario_resposta(payload):
     }
 
 
-def xano_request(method, endpoint, token=None, **kwargs):
-    """Executa uma requisi??o ? API do Xano."""
+def _xano_http_request(method, endpoint, token=None, **kwargs):
     config = get_xano_config()
 
     endpoint_str = str(endpoint or "")
     lower_endpoint = endpoint_str.lower()
 
     if lower_endpoint.startswith("/auth/"):
+        base_url = config["auth_base_url"]
+    elif lower_endpoint == "/user" or lower_endpoint.startswith("/user/"):
         base_url = config["auth_base_url"]
     elif lower_endpoint.startswith("/category"):
         base_url = config["categories_base_url"]
@@ -257,18 +295,64 @@ def xano_request(method, endpoint, token=None, **kwargs):
         base_url = config["stock_entries_base_url"]
     elif lower_endpoint.startswith("/stock-movement"):
         base_url = config["stock_movements_base_url"]
-    elif lower_endpoint.startswith("/sale"):
+        if not base_url:
+            raise ValueError(
+                "XANO_STOCK_MOVEMENTS_URL não está configurada para o grupo "
+                "de movimentações."
+            )
+    elif lower_endpoint == "/sale" or lower_endpoint.startswith("/sale/"):
         base_url = config["sales_base_url"]
     else:
         base_url = config["resources_base_url"]
 
-    url = _build_api_url(base_url, endpoint)
-
+    if endpoint_str == STOCK_ENTRY_URL:
+        stock_entries_base_url = config["stock_entries_base_url"]
+        if stock_entries_base_url:
+            if stock_entries_base_url.lower().endswith("/stock-entry"):
+                url = stock_entries_base_url
+            else:
+                url = _build_api_url(
+                    stock_entries_base_url,
+                    "/stock-entry",
+                )
+        else:
+            url = endpoint_str
+    elif endpoint_str == SUPPLIERS_URL:
+        supplier_override = (
+            os.getenv("XANO_SUPPLIERS_URL")
+            or _get_streamlit_secret("XANO_SUPPLIERS_URL")
+        )
+        url = (
+            _build_api_url(supplier_override, "/supplier")
+            if supplier_override
+            else SUPPLIERS_URL
+        )
+    else:
+        url = _build_api_url(base_url, endpoint)
     headers = kwargs.pop("headers", {}).copy()
-    auth_token = token or config["token"]
+    auth_token = (
+        token.strip()
+        if isinstance(token, str) and token.strip()
+        else config["token"]
+    )
+    if isinstance(auth_token, str):
+        auth_token = auth_token.strip()
+        if auth_token.lower().startswith("bearer "):
+            auth_token = auth_token[7:].strip()
 
+    is_login_request = (
+        str(method).upper() == "POST"
+        and lower_endpoint.rstrip("/") == "/auth/login"
+    )
     if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+        headers["Authorization"] = "Bearer " + str(auth_token)
+    elif is_login_request:
+        headers.pop("Authorization", None)
+    else:
+        raise ValueError(
+            "Token Xano ausente. Faça login para obter uma sessão válida "
+            "antes de acessar este endpoint."
+        )
 
     response = requests.request(
         method=method,
@@ -277,9 +361,11 @@ def xano_request(method, endpoint, token=None, **kwargs):
         timeout=20,
         **kwargs,
     )
-
     response.raise_for_status()
+    return response
 
+
+def _decode_xano_response(response):
     if not response.content:
         return None
 
@@ -287,6 +373,617 @@ def xano_request(method, endpoint, token=None, **kwargs):
         return response.json()
     except ValueError:
         return response.text
+
+
+def _xano_response_error_message(response, payload):
+    if isinstance(payload, dict):
+        for key in ("message", "error", "description", "detail"):
+            message = payload.get(key)
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:500]
+
+    content_type = getattr(response, "headers", {}).get("Content-Type", "")
+    if content_type.lower().startswith("text/plain"):
+        message = getattr(response, "text", "")
+        return message.strip()[:500] if isinstance(message, str) else None
+    return None
+
+
+def xano_request(method, endpoint, token=None, **kwargs):
+    """Execute a request to the Xano API and decode its response."""
+    response = _xano_http_request(method, endpoint, token=token, **kwargs)
+    return _decode_xano_response(response)
+
+
+USER_ROLES = ("Adm", "aux.ecommerce")
+_USER_EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+class RespostaUsuarioInconclusivaError(ValueError):
+    """Indica que a resposta não confirmou os dados do usuário."""
+
+
+class OperacaoUsuarioInconclusivaError(RuntimeError):
+    """Indica que a criação pode ter sido processada sem confirmação."""
+
+
+def validar_dados_usuario(*, name, email, password, role):
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name é obrigatório.")
+    if not isinstance(email, str) or not email.strip():
+        raise ValueError("email é obrigatório.")
+    email = email.strip()
+    if not _USER_EMAIL_PATTERN.fullmatch(email):
+        raise ValueError("Informe um e-mail válido.")
+    if not isinstance(password, str) or len(password) < 8:
+        raise ValueError("password deve ter ao menos 8 caracteres.")
+    if not any(character.isalpha() for character in password) or not any(
+        character.isdigit() for character in password
+    ):
+        raise ValueError(
+            "password deve conter ao menos uma letra e um número."
+        )
+    if role not in USER_ROLES:
+        raise ValueError("role deve ser 'Adm' ou 'aux.ecommerce'.")
+    return {
+        "name": name.strip(),
+        "email": email,
+        "password": password,
+        "role": role,
+    }
+
+
+def _exigir_token_usuario(token, operation):
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError(
+            f"A sessão expirou. Entre novamente para {operation} usuários."
+        )
+
+
+def _normalizar_usuario_publico(record):
+    required_fields = {"id", "name", "email", "role", "created_at"}
+    if not isinstance(record, dict) or not required_fields.issubset(record):
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém todos os campos do usuário."
+        )
+
+    try:
+        user_id = _validar_id_recurso(record["id"], "user.id")
+    except ValueError as error:
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém um ID de usuário válido."
+        ) from error
+
+    normalized = {"id": user_id}
+    for field in ("name", "email", "role"):
+        value = record[field]
+        if not isinstance(value, str) or not value.strip():
+            raise RespostaUsuarioInconclusivaError(
+                f"A resposta do Xano não contém {field} válido."
+            )
+        normalized[field] = value.strip()
+    if not _USER_EMAIL_PATTERN.fullmatch(normalized["email"]):
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém um e-mail válido."
+        )
+
+    created_at = record["created_at"]
+    if isinstance(created_at, bool) or not isinstance(
+        created_at,
+        (str, int, float),
+    ):
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém created_at válido."
+        )
+    if isinstance(created_at, str) and not created_at.strip():
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém created_at válido."
+        )
+    if isinstance(created_at, float) and not math.isfinite(created_at):
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não contém created_at válido."
+        )
+    normalized["created_at"] = created_at
+    return normalized
+
+
+def listar_usuarios(token):
+    _exigir_token_usuario(token, "consultar")
+    response = xano_request("GET", "/user", token=token)
+    if not isinstance(response, list):
+        raise RespostaUsuarioInconclusivaError(
+            "GET /user não retornou uma lista de usuários válida."
+        )
+    return [_normalizar_usuario_publico(user) for user in response]
+
+
+def criar_usuario(token, *, name, email, password, role):
+    _exigir_token_usuario(token, "cadastrar")
+    payload = validar_dados_usuario(
+        name=name,
+        email=email,
+        password=password,
+        role=role,
+    )
+    try:
+        response = xano_request(
+            "POST",
+            "/user",
+            token=token,
+            json=payload,
+        )
+    except requests.HTTPError:
+        raise
+    except requests.RequestException as error:
+        raise OperacaoUsuarioInconclusivaError(
+            "Não foi possível confirmar se o usuário foi cadastrado. "
+            "Atualize a listagem antes de tentar novamente."
+        ) from error
+
+    user = _normalizar_usuario_publico(response)
+    if (
+        user["name"] != payload["name"]
+        or user["email"].casefold() != payload["email"].casefold()
+        or user["role"] != payload["role"]
+    ):
+        raise RespostaUsuarioInconclusivaError(
+            "A resposta do Xano não corresponde ao usuário enviado."
+        )
+    return user
+
+
+class RespostaVendaInconclusivaError(ValueError):
+    """Indica que não foi possível confirmar o resultado de uma venda."""
+
+
+class OperacaoVendaInconclusivaError(RuntimeError):
+    """Indica que uma falha de transporte deixou a criação sem confirmação."""
+
+
+_CAMPOS_FINANCEIROS_VENDA = {
+    "gross_amount",
+    "discount_amount",
+    "net_revenue",
+    "total_cmv",
+    "total_costs",
+    "result",
+    "profit_margin_percent",
+}
+_TIPOS_CUSTO_VENDA = {
+    "embalagem",
+    "comissao_marketplace",
+    "impostos",
+    "frete_saida",
+    "outros",
+}
+
+
+def _validar_numero_venda(valor, campo, *, permitir_negativo=False):
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise ValueError(f"{campo} deve ser um número.")
+    if isinstance(valor, float) and not math.isfinite(valor):
+        raise ValueError(f"{campo} deve ser finito.")
+    if not permitir_negativo and valor < 0:
+        raise ValueError(f"{campo} não pode ser negativo.")
+    return valor
+
+
+def _validar_data_venda(valor, campo):
+    return sale_date_to_unix_milliseconds(valor, campo)
+
+
+def _validar_filtro_data_venda(valor, campo):
+    if not isinstance(valor, str):
+        raise ValueError(f"{campo} deve ser um timestamp em texto.")
+    return valor
+
+
+def _validar_payload_venda(dados):
+    if not isinstance(dados, dict):
+        raise ValueError("Os dados da venda devem ser um objeto.")
+
+    campos_permitidos = {
+        "idempotency_key",
+        "sales_channel",
+        "order_number",
+        "sale_date",
+        "notes",
+        "items",
+        "costs",
+    }
+    campos_desconhecidos = set(dados) - campos_permitidos
+    if campos_desconhecidos:
+        raise ValueError("A venda contém campos não aceitos pelo contrato.")
+
+    idempotency_key = dados.get("idempotency_key")
+    if not isinstance(idempotency_key, str):
+        raise ValueError("idempotency_key deve ser um UUID v4.")
+    try:
+        parsed_idempotency_key = uuid.UUID(idempotency_key)
+    except (AttributeError, ValueError) as error:
+        raise ValueError("idempotency_key deve ser um UUID v4.") from error
+    if (
+        parsed_idempotency_key.version != 4
+        or str(parsed_idempotency_key) != idempotency_key.lower()
+    ):
+        raise ValueError("idempotency_key deve ser um UUID v4.")
+
+    sales_channel = dados.get("sales_channel")
+    if not isinstance(sales_channel, str) or not sales_channel.strip():
+        raise ValueError("sales_channel deve ser texto não vazio.")
+
+    itens = dados.get("items")
+    if not isinstance(itens, list) or not itens:
+        raise ValueError("A venda deve conter pelo menos um item.")
+
+    payload = {
+        "idempotency_key": idempotency_key,
+        "sales_channel": sales_channel.strip(),
+        "items": [],
+    }
+
+    for campo in ("order_number", "notes"):
+        valor = dados.get(campo)
+        if valor is not None:
+            if not isinstance(valor, str):
+                raise ValueError(f"{campo} deve ser texto.")
+            payload[campo] = valor
+
+    if dados.get("sale_date") is not None:
+        payload["sale_date"] = _validar_data_venda(
+            dados["sale_date"],
+            "sale_date",
+        )
+
+    campos_item_permitidos = {
+        "product_id",
+        "quantity",
+        "unit_sale_price",
+        "discount_amount",
+    }
+    for indice, item in enumerate(itens):
+        prefixo = f"items[{indice}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{prefixo} deve ser um objeto.")
+        if set(item) - campos_item_permitidos:
+            raise ValueError(f"{prefixo} contém campos não aceitos.")
+        if "product_id" not in item:
+            raise ValueError(f"{prefixo}.product_id é obrigatório.")
+        if "quantity" not in item:
+            raise ValueError(f"{prefixo}.quantity é obrigatório.")
+        if "unit_sale_price" not in item:
+            raise ValueError(f"{prefixo}.unit_sale_price é obrigatório.")
+
+        product_id = _validar_id_recurso(
+            item["product_id"],
+            f"{prefixo}.product_id",
+        )
+        quantity = item["quantity"]
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+            raise ValueError(f"{prefixo}.quantity deve ser um inteiro maior que zero.")
+
+        unit_sale_price = _validar_numero_venda(
+            item["unit_sale_price"],
+            f"{prefixo}.unit_sale_price",
+        )
+        payload_item = {
+            "product_id": product_id,
+            "quantity": quantity,
+            "unit_sale_price": unit_sale_price,
+        }
+        desconto = item.get("discount_amount")
+        if desconto is not None:
+            desconto = _validar_numero_venda(
+                desconto,
+                f"{prefixo}.discount_amount",
+            )
+            if desconto > unit_sale_price * quantity:
+                raise ValueError(
+                    f"{prefixo}.discount_amount não pode superar o valor bruto do item."
+                )
+            payload_item["discount_amount"] = desconto
+        payload["items"].append(payload_item)
+
+    if "costs" not in dados:
+        raise ValueError("costs é obrigatório e deve ser uma lista.")
+    custos = dados["costs"]
+    if not isinstance(custos, list):
+        raise ValueError("costs é obrigatório e deve ser uma lista.")
+    campos_custo_permitidos = {"cost_type", "description", "amount"}
+    payload["costs"] = []
+    for indice, custo in enumerate(custos):
+        prefixo = f"costs[{indice}]"
+        if not isinstance(custo, dict):
+            raise ValueError(f"{prefixo} deve ser um objeto.")
+        if set(custo) - campos_custo_permitidos:
+            raise ValueError(f"{prefixo} contém campos não aceitos.")
+        tipo = custo.get("cost_type")
+        if not isinstance(tipo, str) or tipo not in _TIPOS_CUSTO_VENDA:
+            raise ValueError(f"{prefixo}.cost_type não é permitido.")
+        if "amount" not in custo:
+            raise ValueError(f"{prefixo}.amount é obrigatório.")
+
+        payload_custo = {
+            "cost_type": tipo,
+            "amount": _validar_numero_venda(
+                custo["amount"],
+                f"{prefixo}.amount",
+            ),
+        }
+        descricao = custo.get("description")
+        if descricao is not None:
+            if not isinstance(descricao, str):
+                raise ValueError(f"{prefixo}.description deve ser texto.")
+            payload_custo["description"] = descricao
+        payload["costs"].append(payload_custo)
+
+    return payload
+
+
+def _validar_resumo_financeiro_venda(resumo):
+    if not isinstance(resumo, dict) or not _CAMPOS_FINANCEIROS_VENDA.issubset(resumo):
+        raise RespostaVendaInconclusivaError(
+            "A resposta do Xano não contém o resumo financeiro completo da venda."
+        )
+    for campo in _CAMPOS_FINANCEIROS_VENDA:
+        valor = resumo[campo]
+        if (
+            isinstance(valor, bool)
+            or not isinstance(valor, (int, float))
+            or (isinstance(valor, float) and not math.isfinite(valor))
+        ):
+            raise RespostaVendaInconclusivaError(
+                f"A resposta do Xano contém valor financeiro inválido: {campo}."
+            )
+
+
+def _validar_resposta_detalhe_venda(resposta, venda_id=None):
+    if not isinstance(resposta, dict):
+        raise RespostaVendaInconclusivaError(
+            "A resposta do Xano não confirmou os dados da venda."
+        )
+    venda = resposta.get("sale")
+    if not isinstance(venda, dict):
+        raise RespostaVendaInconclusivaError(
+            "A resposta do Xano não contém o registro da venda."
+        )
+    try:
+        id_retornado = _validar_id_recurso(venda.get("id"), "sale.id")
+    except ValueError as error:
+        raise RespostaVendaInconclusivaError(
+            "A resposta do Xano não contém um identificador válido para a venda."
+        ) from error
+    if venda_id is not None and id_retornado != venda_id:
+        raise RespostaVendaInconclusivaError(
+            "A resposta do Xano não corresponde à venda solicitada."
+        )
+    if venda.get("sale_date") is not None:
+        try:
+            sale_date_to_unix_milliseconds(venda["sale_date"])
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RespostaVendaInconclusivaError(
+                "A resposta do Xano contém uma data de venda inválida."
+            ) from error
+
+    for campo in ("items", "costs"):
+        valor = resposta.get(campo)
+        if not isinstance(valor, list) or any(
+            not isinstance(registro, dict) for registro in valor
+        ):
+            raise RespostaVendaInconclusivaError(
+                f"A resposta do Xano não contém uma lista válida de {campo}."
+            )
+    _validar_resumo_financeiro_venda(resposta.get("financial_summary"))
+    return resposta
+
+
+def criar_venda(token, dados):
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para registrar vendas.")
+    payload = _validar_payload_venda(dados)
+    try:
+        resposta = xano_request(
+            "POST",
+            "/sale",
+            token=token,
+            json=payload,
+        )
+    except (requests.Timeout, requests.ConnectionError) as error:
+        raise OperacaoVendaInconclusivaError(
+            "Não foi possível confirmar se a venda foi registrada. "
+            "Não repita automaticamente a operação; consulte as vendas antes "
+            "de tentar novamente."
+        ) from error
+
+    return _validar_resposta_detalhe_venda(resposta)
+
+
+def _validar_inteiro_paginacao(valor, campo, *, permitir_zero=True):
+    minimo = 0 if permitir_zero else 1
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor < minimo:
+        raise ValueError(f"{campo} deve ser um inteiro maior ou igual a {minimo}.")
+    return valor
+
+
+def _validar_resposta_lista_vendas(resposta):
+    if not isinstance(resposta, dict):
+        raise ValueError("A resposta paginada de vendas deve ser um objeto.")
+    pagination_fields = {
+        "itemsReceived",
+        "curPage",
+        "offset",
+        "itemsTotal",
+        "pageTotal",
+        "nextPage",
+        "prevPage",
+    }
+    if "items" in resposta and "curPage" in resposta and "perPage" in resposta:
+        cur_page = resposta.get("curPage")
+        per_page = resposta.get("perPage")
+        total = resposta.get("total", len(resposta["items"]))
+        if (
+            isinstance(cur_page, int)
+            and isinstance(per_page, int)
+            and isinstance(total, int)
+            and not isinstance(cur_page, bool)
+            and not isinstance(per_page, bool)
+            and not isinstance(total, bool)
+        ):
+            items = resposta["items"]
+            if isinstance(items, list):
+                page_total = max(1, (total + per_page - 1) // per_page)
+                resposta = {
+                    "itemsReceived": len(items),
+                    "curPage": cur_page,
+                    "nextPage": cur_page + 1 if cur_page < page_total else None,
+                    "prevPage": cur_page - 1 if cur_page > 1 else None,
+                    "offset": (cur_page - 1) * per_page,
+                    "itemsTotal": total,
+                    "pageTotal": page_total,
+                    "items": items,
+                }
+    if (
+        "items" in resposta
+        and not pagination_fields.intersection(resposta)
+        and isinstance(resposta["items"], list)
+    ):
+        item_count = len(resposta["items"])
+        resposta = {
+            "itemsReceived": item_count,
+            "curPage": 1,
+            "nextPage": None,
+            "prevPage": None,
+            "offset": 0,
+            "itemsTotal": item_count,
+            "pageTotal": 1,
+            "items": resposta["items"],
+        }
+    campos_inteiros = {
+        "itemsReceived": True,
+        "curPage": False,
+        "offset": True,
+        "itemsTotal": True,
+        "pageTotal": True,
+    }
+    for campo, permitir_zero in campos_inteiros.items():
+        if campo not in resposta:
+            raise ValueError(f"A resposta paginada não contém {campo}.")
+        _validar_inteiro_paginacao(
+            resposta[campo],
+            campo,
+            permitir_zero=permitir_zero,
+        )
+    for campo in ("nextPage", "prevPage"):
+        if campo not in resposta:
+            raise ValueError(f"A resposta paginada não contém {campo}.")
+        if resposta[campo] is not None:
+            _validar_inteiro_paginacao(
+                resposta[campo],
+                campo,
+                permitir_zero=False,
+            )
+    itens = resposta.get("items")
+    if not isinstance(itens, list) or any(
+        not isinstance(item, dict) for item in itens
+    ):
+        raise ValueError("A resposta paginada não contém uma lista válida de vendas.")
+    return resposta
+
+
+def _validar_filtro_venda(valor, campo):
+    if valor is None:
+        return None
+    if isinstance(valor, str):
+        return valor.strip() or None
+    raise ValueError(f"{campo} deve ser texto.")
+
+
+def listar_vendas(
+    token,
+    *,
+    sales_channel=None,
+    order_number=None,
+    status=None,
+    start_date=None,
+    end_date=None,
+    page=1,
+    per_page=20,
+):
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para consultar vendas.")
+    filtro_canal = _validar_filtro_venda(sales_channel, "sales_channel")
+    if filtro_canal is None:
+        raise ValueError(
+            "O endpoint GET /sale exige sales_channel; "
+            "sales_channel é obrigatório para consultar vendas."
+        )
+
+    parametros = {
+        "sales_channel": filtro_canal,
+        "page": _validar_inteiro_paginacao(
+            page,
+            "page",
+            permitir_zero=False,
+        ),
+        "per_page": _validar_inteiro_paginacao(
+            per_page,
+            "per_page",
+            permitir_zero=False,
+        ),
+    }
+    if per_page > 100:
+        raise ValueError("per_page não pode ser maior que 100.")
+
+    for campo, valor in (
+        ("order_number", order_number),
+    ):
+        filtro = _validar_filtro_venda(valor, campo)
+        if filtro is not None:
+            parametros[campo] = filtro
+
+    if status is not None:
+        if not isinstance(status, str) or status not in {
+            "registrada",
+            "confirmada",
+            "cancelada",
+        }:
+            raise ValueError("status deve ser 'registrada' ou 'cancelada'.")
+        parametros["status"] = status
+
+    for campo, valor in (("start_date", start_date), ("end_date", end_date)):
+        if valor is not None:
+            parametros[campo] = _validar_filtro_data_venda(valor, campo)
+
+    resposta = xano_request(
+        "GET",
+        "/sale",
+        token=token,
+        params=parametros,
+    )
+    return _validar_resposta_lista_vendas(resposta)
+
+
+def consultar_venda(*args, token=None, venda_id=None, sale_id=None):
+    if len(args) == 2:
+        token, venda_id = args
+    elif len(args) == 1:
+        if venda_id is None:
+            venda_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("consultar_venda recebeu argumentos em excesso.")
+    if venda_id is None:
+        venda_id = sale_id
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para consultar vendas.")
+    venda_id = _validar_id_recurso(venda_id, "sale_id")
+    resposta = xano_request(
+        "GET",
+        f"/sale/{venda_id}",
+        token=token,
+    )
+    return _validar_resposta_detalhe_venda(resposta, venda_id=venda_id)
 
 
 def listar_produtos(token=None, *, name=None, category_id=None, status=None, **kwargs):
@@ -314,6 +1011,604 @@ def listar_produtos(token=None, *, name=None, category_id=None, status=None, **k
             params[chave] = valor
 
     return xano_request("GET", "/product", token=token, params=params)
+
+
+def _validar_id_recurso(resource_id, field_name):
+    if isinstance(resource_id, bool):
+        raise ValueError(f"{field_name} deve ser um inteiro positivo.")
+    if isinstance(resource_id, str) and resource_id.strip().isdigit():
+        resource_id = int(resource_id.strip())
+    if not isinstance(resource_id, int) or resource_id < 1:
+        raise ValueError(f"{field_name} deve ser um inteiro positivo.")
+    return resource_id
+
+
+def _confirmar_registro_recurso(payload, resource_id, resource_name):
+    if not isinstance(payload, dict):
+        raise RespostaOperacaoInconclusivaError(
+            f"A resposta do Xano para {resource_name} não confirmou o registro."
+        )
+
+    returned_id = payload.get("id")
+    try:
+        returned_id = _validar_id_recurso(returned_id, "id")
+    except ValueError as error:
+        raise RespostaOperacaoInconclusivaError(
+            f"A resposta do Xano para {resource_name} não confirmou o registro."
+        ) from error
+
+    if returned_id != resource_id:
+        raise RespostaOperacaoInconclusivaError(
+            f"A resposta do Xano para {resource_name} não corresponde ao registro solicitado."
+        )
+    normalized = dict(payload)
+    normalized["id"] = returned_id
+    return normalized
+
+
+def _confirmar_produto_recurso(payload, product_id):
+    record = _confirmar_registro_recurso(payload, product_id, "produto")
+
+    def is_finite_nonnegative_number(value):
+        try:
+            return (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+                and value >= 0
+            )
+        except OverflowError:
+            return False
+
+    required_fields = {
+        "name",
+        "category_id",
+        "min_stock",
+        "sale_price",
+        "status",
+        "stock_quantity",
+        "average_cost",
+    }
+    if not required_fields.issubset(record):
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto está incompleta."
+        )
+
+    if not isinstance(record["name"], str) or not record["name"].strip():
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto contém nome inválido."
+        )
+
+    category_id = record["category_id"]
+    if isinstance(category_id, dict):
+        category_id = category_id.get("id")
+    try:
+        _validar_id_recurso(category_id, "category_id")
+    except ValueError as error:
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto contém categoria inválida."
+        ) from error
+
+    if (
+        isinstance(record["min_stock"], bool)
+        or not isinstance(record["min_stock"], int)
+        or record["min_stock"] < 0
+    ):
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto contém estoque mínimo inválido."
+        )
+
+    if not is_finite_nonnegative_number(record["sale_price"]):
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto contém preço inválido."
+        )
+
+    if not isinstance(record["status"], str) or record["status"] not in {
+        "ativo",
+        "inativo",
+    }:
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano para produto contém status inválido."
+        )
+
+    for field in ("sku", "description"):
+        value = record.get(field)
+        if value is not None and not isinstance(value, str):
+            raise RespostaOperacaoInconclusivaError(
+                f"A resposta do Xano para produto contém {field} inválido."
+            )
+
+    for field in ("stock_quantity", "average_cost"):
+        if not is_finite_nonnegative_number(record[field]):
+            raise RespostaOperacaoInconclusivaError(
+                f"A resposta do Xano para produto contém {field} inválido."
+            )
+
+    return record
+
+
+def consultar_produto(*args, token=None, product_id=None):
+    if len(args) == 2:
+        token, product_id = args
+    elif len(args) == 1:
+        if product_id is None:
+            product_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("consultar_produto recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para consultar produtos.")
+    product_id = _validar_id_recurso(product_id, "product_id")
+    payload = xano_request(
+        "GET",
+        f"/product/{product_id}",
+        token=token,
+    )
+    return _confirmar_produto_recurso(payload, product_id)
+
+
+def editar_produto(*args, token=None, product_id=None, **fields):
+    if len(args) == 2:
+        token, product_id = args
+    elif len(args) == 1:
+        if product_id is None:
+            product_id = args[0]
+        elif token is None:
+            token = args[0]
+        else:
+            raise TypeError("editar_produto recebeu argumentos duplicados.")
+    elif len(args) > 2:
+        raise TypeError("editar_produto recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para editar produtos.")
+    product_id = _validar_id_recurso(product_id, "product_id")
+
+    allowed_fields = {
+        "name",
+        "sku",
+        "category_id",
+        "sale_price",
+        "min_stock",
+        "status",
+        "stock_quantity",
+        "average_cost",
+    }
+    unsupported = set(fields) - allowed_fields
+    if unsupported:
+        raise ValueError("A edição contém campos não aceitos.")
+
+    payload = {}
+    for field, value in fields.items():
+        if value is None:
+            continue
+        if field in {"name", "sku"}:
+            if not isinstance(value, str):
+                raise ValueError(f"{field} deve ser texto.")
+            if field == "name" and not value.strip():
+                raise ValueError("name não pode ficar vazio.")
+            payload[field] = value.strip()
+        elif field == "category_id":
+            payload[field] = _validar_id_recurso(value, field)
+        elif field == "min_stock":
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("min_stock deve ser um inteiro não negativo.")
+            payload[field] = value
+        elif field == "sale_price":
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError("sale_price deve ser um número não negativo.")
+            payload[field] = float(value)
+        elif field == "status":
+            if value not in {"ativo", "inativo"}:
+                raise ValueError("status deve ser 'ativo' ou 'inativo'.")
+            payload[field] = value
+
+    if not payload:
+        raise ValueError("Informe ao menos um campo cadastral para editar.")
+
+    response = xano_request(
+        "PATCH",
+        f"/product/{product_id}",
+        token=token,
+        json=payload,
+    )
+    record = _confirmar_produto_recurso(response, product_id)
+    if "status" in payload and record.get("status") != payload["status"]:
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o status atualizado do produto."
+        )
+    return record
+
+
+def inativar_produto(*args, token=None, product_id=None):
+    if len(args) == 2:
+        token, product_id = args
+    elif len(args) == 1:
+        if product_id is None:
+            product_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("inativar_produto recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para inativar produtos.")
+    product_id = _validar_id_recurso(product_id, "product_id")
+    payload = xano_request(
+        "PATCH",
+        f"/product/{product_id}/deactivate",
+        token=token,
+    )
+    record = _confirmar_produto_recurso(payload, product_id)
+    if record.get("status") != "inativo":
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou a inativação do produto."
+        )
+    return record
+
+
+def listar_movimentacoes_estoque(
+    token=None,
+    *,
+    product_id=None,
+    movement_type=None,
+    start_date=None,
+    end_date=None,
+    page=None,
+    per_page=None,
+):
+    """Consulta movimentações; datas e enum são encaminhados sem conversão."""
+    params = {}
+
+    if product_id is not None:
+        if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id < 1:
+            raise ValueError("product_id deve ser um ID inteiro positivo.")
+        params["product_id"] = product_id
+
+    if movement_type is not None:
+        if not isinstance(movement_type, str):
+            raise ValueError("movement_type deve ser texto.")
+        movement_type = movement_type.strip()
+        if movement_type:
+            params["movement_type"] = movement_type
+
+    for field, value in (("start_date", start_date), ("end_date", end_date)):
+        if value is not None:
+            if not isinstance(value, str):
+                raise ValueError(f"{field} deve ser um timestamp em texto.")
+            value = value.strip()
+            if value:
+                params[field] = value
+
+    if page is not None:
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("page deve ser um inteiro positivo.")
+        params["page"] = page
+
+    if per_page is not None:
+        if (
+            isinstance(per_page, bool)
+            or not isinstance(per_page, int)
+            or not 1 <= per_page <= 100
+        ):
+            raise ValueError("per_page deve ser um inteiro entre 1 e 100.")
+        params["per_page"] = per_page
+
+    payload = xano_request(
+        "GET",
+        "/stock-movement",
+        token=token,
+        params=params,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "GET /stock-movement retornou uma resposta em formato inválido."
+        )
+
+    movements = payload.get("movements")
+    if not isinstance(movements, list):
+        movements = payload.get("items")
+    if not isinstance(movements, list):
+        raise ValueError(
+            "GET /stock-movement retornou uma resposta sem a lista "
+            "movements ou items."
+        )
+    if any(not isinstance(movement, dict) for movement in movements):
+        raise ValueError(
+            "GET /stock-movement retornou um registro de movimentação inválido."
+        )
+
+    if payload.get("movements") is movements:
+        return payload
+
+    normalized_payload = dict(payload)
+    normalized_payload["movements"] = movements
+    return normalized_payload
+
+
+def extrair_fornecedores(payload):
+    """Valida e normaliza a lista direta retornada por GET /supplier."""
+    if isinstance(payload, dict):
+        if not any(
+            isinstance(payload.get(key), list)
+            for key in ("suppliers", "data", "items", "results", "rows")
+        ):
+            raise ValueError("GET /supplier retornou uma lista em formato inválido.")
+        payload = _extrair_lista(payload, ("suppliers", "data", "items", "results", "rows"))
+    if not isinstance(payload, list):
+        raise ValueError("GET /supplier retornou uma lista em formato inválido.")
+
+    fornecedores = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("GET /supplier retornou um fornecedor inválido.")
+
+        fornecedor_id = item.get("id")
+        if isinstance(fornecedor_id, bool):
+            raise ValueError("GET /supplier retornou um ID de fornecedor inválido.")
+        if isinstance(fornecedor_id, str) and fornecedor_id.strip().isdigit():
+            fornecedor_id = int(fornecedor_id.strip())
+        if not isinstance(fornecedor_id, int) or fornecedor_id < 1:
+            raise ValueError("GET /supplier retornou um ID de fornecedor inválido.")
+
+        name = item.get("name")
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise ValueError("GET /supplier retornou um nome de fornecedor inválido.")
+
+        fornecedor = {"id": fornecedor_id}
+        if isinstance(name, str) and name.strip():
+            fornecedor["name"] = name.strip()
+        for field in ("cnpj", "contact_name", "email", "phone", "status"):
+            value = item.get(field)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"GET /supplier retornou {field} em formato inválido."
+                    )
+                if value.strip():
+                    fornecedor[field] = value.strip()
+        fornecedores.append(fornecedor)
+
+    return fornecedores
+
+
+def listar_fornecedores(token=None, *, name=None, status=None):
+    """Lista fornecedores pelo endpoint Xano confirmado."""
+    if status is None:
+        configured_supplier_url = (
+            os.getenv("XANO_SUPPLIERS_URL")
+            or _get_streamlit_secret("XANO_SUPPLIERS_URL")
+        )
+        if configured_supplier_url:
+            status = "ativo"
+        else:
+            raise ValueError("Informe uma situação válida para consultar fornecedores.")
+    if not isinstance(status, str) or status not in {"ativo", "inativo", "todos"}:
+        raise ValueError("Informe uma situação válida para consultar fornecedores.")
+
+    status_values = ("ativo", "inativo") if status == "todos" else (status,)
+    fornecedores = []
+    ids_encontrados = set()
+    for status_value in status_values:
+        params = {"status": status_value}
+        if name is not None and str(name).strip():
+            params["name"] = str(name).strip()
+        payload = xano_request(
+            "GET",
+            SUPPLIERS_URL,
+            token=token,
+            params=params,
+        )
+        for fornecedor in extrair_fornecedores(payload):
+            supplier_id = fornecedor.get("id")
+            if supplier_id in ids_encontrados:
+                continue
+            ids_encontrados.add(supplier_id)
+            fornecedores.append(fornecedor)
+    return fornecedores
+
+
+def validar_cnpj(value):
+    value = str(value or "").strip()
+    if not value or any(char not in "0123456789./- " for char in value):
+        return False
+
+    digits = "".join(char for char in value if char.isdigit())
+    if len(digits) != 14 or len(set(digits)) == 1:
+        return False
+
+    def calcular_digito(base, weights):
+        total = sum(int(digit) * weight for digit, weight in zip(base, weights))
+        remainder = total % 11
+        return "0" if remainder < 2 else str(11 - remainder)
+
+    primeiro = calcular_digito(
+        digits[:12],
+        (5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2),
+    )
+    segundo = calcular_digito(
+        digits[:12] + primeiro,
+        (6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2),
+    )
+    return digits[-2:] == primeiro + segundo
+
+
+def _validar_campos_fornecedor(fields, *, create):
+    allowed_fields = {
+        "name",
+        "contact_name",
+        "cnpj",
+        "email",
+        "phone",
+    }
+    if not create:
+        allowed_fields.add("status")
+
+    unsupported = set(fields) - allowed_fields
+    if unsupported:
+        raise ValueError("A operação contém campos não aceitos.")
+
+    payload = {}
+    for field, value in fields.items():
+        if value is None:
+            continue
+        if field in {"name", "contact_name", "cnpj", "email", "phone"}:
+            if not isinstance(value, str):
+                raise ValueError(f"{field} deve ser texto.")
+            value = value.strip()
+            if not value:
+                if field == "name" and create:
+                    raise ValueError("name é obrigatório.")
+                continue
+            if field == "name" and not value:
+                raise ValueError("name não pode ficar vazio.")
+            if field == "cnpj" and not validar_cnpj(value):
+                raise ValueError("Informe um CNPJ válido.")
+            payload[field] = value
+        elif field == "status":
+            if value not in {"ativo", "inativo"}:
+                raise ValueError("status deve ser 'ativo' ou 'inativo'.")
+            payload[field] = value
+
+    if create and "name" not in payload:
+        raise ValueError("name é obrigatório.")
+    if not create and not payload:
+        raise ValueError("Informe ao menos um campo para editar o fornecedor.")
+    return payload
+
+
+def consultar_fornecedor(*args, token=None, supplier_id=None):
+    if len(args) == 2:
+        token, supplier_id = args
+    elif len(args) == 1:
+        if supplier_id is None:
+            supplier_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("consultar_fornecedor recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para consultar fornecedores.")
+    supplier_id = _validar_id_recurso(supplier_id, "supplier_id")
+    payload = xano_request(
+        "GET",
+        f"/supplier/{supplier_id}",
+        token=token,
+    )
+    record = _confirmar_registro_recurso(payload, supplier_id, "fornecedor")
+    if not isinstance(record.get("name"), str) or not record["name"].strip():
+        raise ValueError("A resposta do Xano para fornecedor não contém nome válido.")
+    return record
+
+
+def criar_fornecedor(
+    token,
+    *,
+    name,
+    contact_name=None,
+    cnpj=None,
+    email=None,
+    phone=None,
+):
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para cadastrar fornecedores.")
+    payload = _validar_campos_fornecedor(
+        {
+            "name": name,
+            "contact_name": contact_name,
+            "cnpj": cnpj,
+            "email": email,
+            "phone": phone,
+        },
+        create=True,
+    )
+    response = xano_request(
+        "POST",
+        "/supplier",
+        token=token,
+        json=payload,
+    )
+    if not isinstance(response, dict):
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o cadastro do fornecedor."
+        )
+    try:
+        supplier_id = _validar_id_recurso(response.get("id"), "id")
+    except ValueError as error:
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o cadastro do fornecedor."
+        ) from error
+    if not isinstance(response.get("name"), str) or not response["name"].strip():
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o cadastro do fornecedor."
+        )
+    if response.get("status") != "ativo":
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o status inicial do fornecedor."
+        )
+    normalized = dict(response)
+    normalized["id"] = supplier_id
+    return normalized
+
+
+def editar_fornecedor(*args, token=None, supplier_id=None, **fields):
+    if len(args) == 2:
+        token, supplier_id = args
+    elif len(args) == 1:
+        if supplier_id is None:
+            supplier_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("editar_fornecedor recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para editar fornecedores.")
+    supplier_id = _validar_id_recurso(supplier_id, "supplier_id")
+    payload = _validar_campos_fornecedor(fields, create=False)
+    response = xano_request(
+        "PATCH",
+        f"/supplier/{supplier_id}",
+        token=token,
+        json=payload,
+    )
+    record = _confirmar_registro_recurso(response, supplier_id, "fornecedor")
+    if not isinstance(record.get("name"), str) or not record["name"].strip():
+        raise ValueError("A resposta do Xano para fornecedor não contém nome válido.")
+    if "status" in payload and record.get("status") != payload["status"]:
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou o status atualizado do fornecedor."
+        )
+    return record
+
+
+def inativar_fornecedor(*args, token=None, supplier_id=None):
+    if len(args) == 2:
+        token, supplier_id = args
+    elif len(args) == 1:
+        if supplier_id is None:
+            supplier_id = args[0]
+        else:
+            token = args[0]
+    elif len(args) > 2:
+        raise TypeError("inativar_fornecedor recebeu argumentos em excesso.")
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para inativar fornecedores.")
+    supplier_id = _validar_id_recurso(supplier_id, "supplier_id")
+    payload = xano_request(
+        "PATCH",
+        f"/supplier/{supplier_id}/deactivate",
+        token=token,
+    )
+    record = _confirmar_registro_recurso(payload, supplier_id, "fornecedor")
+    if record.get("status") != "inativo":
+        raise RespostaOperacaoInconclusivaError(
+            "A resposta do Xano não confirmou a inativação do fornecedor."
+        )
+    return record
 
 
 def extrair_categorias(payload):
@@ -436,39 +1731,225 @@ def extrair_id_produto(payload):
     return None
 
 
-def confirmar_produto_criado(payload):
-    """Valida se a resposta do Xano confirma a criação do produto."""
-    if payload is None:
-        return False
-
-    if isinstance(payload, (str, bytes)):
-        return False
-
-    if isinstance(payload, list):
-        return any(confirmar_produto_criado(item) for item in payload)
-
+def confirmar_produto_criado(payload, *, description=None):
+    """Confirma o registro direto de produto retornado por POST /product."""
     if not isinstance(payload, dict):
         return False
 
-    id_produto = extrair_id_produto(payload)
-    if id_produto is not None:
-        return True
+    name = payload.get("name")
+    category_id = payload.get("category_id")
+    min_stock = payload.get("min_stock")
+    sale_price = payload.get("sale_price")
+    if not isinstance(name, str) or not name.strip():
+        return False
+    if (
+        isinstance(category_id, bool)
+        or not isinstance(category_id, int)
+        or category_id < 1
+    ):
+        return False
+    if isinstance(min_stock, bool) or not isinstance(min_stock, int) or min_stock < 0:
+        return False
+    if (
+        isinstance(sale_price, bool)
+        or not isinstance(sale_price, (int, float))
+        or not math.isfinite(sale_price)
+        or sale_price < 0
+    ):
+        return False
 
-    status = payload.get("status")
-    if isinstance(status, str):
-        status_normalizado = status.strip().lower()
-        if status_normalizado in {
-            "success",
-            "ok",
-            "created",
-            "created_successfully",
-        }:
-            return any(
-                chave in payload
-                for chave in ("data", "product", "produto", "result")
-            )
+    if "id" in payload:
+        product_id = payload["id"]
+        if isinstance(product_id, bool):
+            return False
+        if isinstance(product_id, int):
+            return product_id > 0
+        if isinstance(product_id, str):
+            return product_id.strip().isdigit() and int(product_id.strip()) > 0
+        return False
 
-    return False
+    return True
+
+
+class RespostaCriacaoInconclusivaError(ValueError):
+    """Indica que a resposta não confirma se o produto foi criado."""
+
+
+    def __init__(self, message, *, status_code=None, backend_message=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.backend_message = backend_message
+
+
+class RespostaOperacaoInconclusivaError(ValueError):
+    """Indica que a resposta não confirma o resultado de uma operação cadastral."""
+
+
+class RespostaEntradaEstoqueInconclusivaError(ValueError):
+    """Indica que a resposta não confirma o registro da entrada de estoque."""
+
+    def __init__(self, message, *, status_code=None, backend_message=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.backend_message = backend_message
+
+
+def mapear_payload_entrada_estoque(
+    *,
+    idempotency_key,
+    product_id,
+    supplier_id,
+    quantity,
+    unit_purchase_cost,
+    entry_date,
+    invoice_number,
+    notes,
+    inbound_freight=None,
+    other_acquisition_costs=None,
+):
+    """Valida e mapeia apenas os campos confirmados do POST de entrada."""
+    for field, value in (("product_id", product_id), ("supplier_id", supplier_id)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{field} deve ser um ID inteiro positivo.")
+
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+        raise ValueError("quantity deve ser um número inteiro maior que zero.")
+
+    costs = {
+        "unit_purchase_cost": unit_purchase_cost,
+        "inbound_freight": inbound_freight,
+        "other_acquisition_costs": other_acquisition_costs,
+    }
+    for field, value in costs.items():
+        if value is None and field != "unit_purchase_cost":
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(f"{field} deve ser um número não negativo.")
+
+    if isinstance(entry_date, datetime):
+        raise ValueError("entry_date deve ser uma data, sem horário.")
+    if isinstance(entry_date, date):
+        entry_date = entry_date.isoformat()
+    elif isinstance(entry_date, str):
+        try:
+            entry_date = date.fromisoformat(entry_date).isoformat()
+        except ValueError as error:
+            raise ValueError("entry_date deve ser uma data válida.") from error
+    else:
+        raise ValueError("entry_date deve ser uma data válida.")
+
+    if not isinstance(invoice_number, str):
+        raise ValueError("invoice_number deve ser texto.")
+    if not isinstance(notes, str):
+        raise ValueError("notes deve ser texto.")
+
+    if not isinstance(idempotency_key, str):
+        raise ValueError("idempotency_key deve ser um UUID v4.")
+    try:
+        parsed_idempotency_key = uuid.UUID(idempotency_key)
+    except (AttributeError, ValueError) as error:
+        raise ValueError("idempotency_key deve ser um UUID v4.") from error
+    if (
+        parsed_idempotency_key.version != 4
+        or str(parsed_idempotency_key) != idempotency_key.lower()
+    ):
+        raise ValueError("idempotency_key deve ser um UUID v4.")
+
+    payload = {
+        "idempotency_key": idempotency_key,
+        "product_id": product_id,
+        "supplier_id": supplier_id,
+        "quantity": quantity,
+        "unit_purchase_cost": float(unit_purchase_cost),
+        "entry_date": entry_date,
+        "invoice_number": invoice_number,
+        "notes": notes,
+    }
+    for field in ("inbound_freight", "other_acquisition_costs"):
+        value = costs[field]
+        if value is not None:
+            payload[field] = float(value)
+
+    return payload
+
+
+def confirmar_entrada_estoque(payload):
+    if not isinstance(payload, dict):
+        return False
+
+    if not payload.get("entry") or not payload.get("movement"):
+        return False
+
+    for field in ("stock_quantity", "average_cost"):
+        value = payload.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            return False
+
+    return True
+
+
+def criar_entrada_estoque(
+    token,
+    *,
+    idempotency_key,
+    product_id,
+    supplier_id,
+    quantity,
+    unit_purchase_cost,
+    entry_date,
+    invoice_number,
+    notes,
+    inbound_freight=None,
+    other_acquisition_costs=None,
+):
+    """Registra entrada de estoque e exige confirmação explícita do Xano."""
+    if not token:
+        raise ValueError("A sessão expirou. Entre novamente para registrar.")
+
+    payload = mapear_payload_entrada_estoque(
+        idempotency_key=idempotency_key,
+        product_id=product_id,
+        supplier_id=supplier_id,
+        quantity=quantity,
+        unit_purchase_cost=unit_purchase_cost,
+        entry_date=entry_date,
+        invoice_number=invoice_number,
+        notes=notes,
+        inbound_freight=inbound_freight,
+        other_acquisition_costs=other_acquisition_costs,
+    )
+    response = _xano_http_request(
+        "POST",
+        STOCK_ENTRY_URL,
+        token=token,
+        json=payload,
+    )
+    status_code = getattr(response, "status_code", None)
+    resposta = _decode_xano_response(response)
+
+    if (
+        not isinstance(status_code, int)
+        or status_code < 200
+        or status_code >= 300
+        or not confirmar_entrada_estoque(resposta)
+    ):
+        raise RespostaEntradaEstoqueInconclusivaError(
+            "O Xano não confirmou o registro da entrada de estoque.",
+            status_code=status_code,
+            backend_message=_xano_response_error_message(response, resposta),
+        )
+
+    return resposta
 
 
 def erro_xano_indica_duplicidade(erro):
@@ -485,17 +1966,14 @@ def erro_xano_indica_duplicidade(erro):
 def mapear_payload_produto(
     *,
     name,
-    description="",
     category_id,
     min_stock,
     sale_price,
-    status=None,
     sku="",
+    description=None,
 ):
     """Valida e mapeia os campos de criação conforme o contrato do Xano."""
     name = str(name or "").strip()
-    if status is not None:
-        status = str(status).strip()
 
     if not name:
         raise ValueError("Informe o nome do produto.")
@@ -534,12 +2012,11 @@ def criar_produto(
     token,
     *,
     name,
-    description="",
     category_id,
     min_stock,
     sale_price,
-    status=None,
     sku="",
+    description=None,
 ):
     """Envia o cadastro de produto ao endpoint existente do Xano."""
     if not token:
@@ -547,23 +2024,27 @@ def criar_produto(
 
     payload = mapear_payload_produto(
         name=name,
-        description=description,
         category_id=category_id,
         min_stock=min_stock,
         sale_price=sale_price,
-        status=status,
         sku=sku,
+        description=description,
     )
 
-    resposta = xano_request(
+    response = _xano_http_request(
         "POST",
         "/product",
         token=token,
         json=payload,
     )
+    resposta = _decode_xano_response(response)
 
     if not confirmar_produto_criado(resposta):
-        raise ValueError("O Xano não confirmou a criação do produto.")
+        raise RespostaCriacaoInconclusivaError(
+            "O Xano n\u00e3o confirmou a cria\u00e7\u00e3o do produto.",
+            status_code=getattr(response, "status_code", None),
+            backend_message=_xano_response_error_message(response, resposta),
+        )
 
     return resposta
 
@@ -687,153 +2168,20 @@ def inativar_categoria(category_id, token=None):
     return resposta
 
 
-def listar_fornecedores(token=None, *, status=None, **kwargs):
-    if not isinstance(status, str) or status not in {"ativo", "inativo", "todos"}:
-        raise ValueError("Informe uma situação válida para consultar fornecedores.")
-
-    statuses = ("ativo", "inativo") if status == "todos" else (status,)
-    fornecedores = []
-    ids_encontrados = set()
-    for situacao in statuses:
-        params = {"status": situacao}
-        params.update({key: value for key, value in kwargs.items() if value is not None})
-        payload = xano_request("GET", "/supplier", token=token, params=params)
-        if payload is None:
-            continue
-        if not isinstance(payload, (dict, list)):
-            raise ValueError("O Xano retornou uma resposta inválida para fornecedores.")
-        resultado = _extrair_lista(
-            payload,
-            ("suppliers", "data", "items", "results", "rows"),
-        )
-        if isinstance(payload, dict) and not any(
-            isinstance(payload.get(key), list)
-            for key in ("suppliers", "data", "items", "results", "rows")
-        ):
-            raise ValueError("O Xano não retornou a lista de fornecedores.")
-
-        for fornecedor in resultado:
-            if not isinstance(fornecedor, dict):
-                fornecedores.append(fornecedor)
-                continue
-            fornecedor_id = fornecedor.get("id") or fornecedor.get("supplier_id")
-            if fornecedor_id is not None:
-                if fornecedor_id in ids_encontrados:
-                    continue
-                ids_encontrados.add(fornecedor_id)
-            fornecedores.append(fornecedor)
-
-    return fornecedores
 
 
-def consultar_fornecedor(supplier_id, token=None):
-    if isinstance(supplier_id, bool) or not str(supplier_id).isdigit():
-        raise ValueError("ID de fornecedor inválido.")
-    payload = xano_request("GET", f"/supplier/{int(supplier_id)}", token=token)
-    registro = _extrair_registro(payload)
-    if registro is None:
-        raise ValueError("O Xano não confirmou a consulta do fornecedor.")
-    return registro
 
 
-def criar_fornecedor(token=None, *, name, contact_name="", cnpj="", email="", phone=""):
-    name = str(name or "").strip()
-    if not name:
-        raise ValueError("Informe o nome do fornecedor.")
-    payload = {"name": name}
-    for key, value in (
-        ("contact_name", contact_name),
-        ("cnpj", cnpj),
-        ("email", email),
-        ("phone", phone),
-    ):
-        text = str(value or "").strip()
-        if text:
-            payload[key] = text
-    resposta = xano_request("POST", "/supplier", token=token, json=payload)
-    if not _confirmar_registro(resposta):
-        raise ValueError("O Xano não confirmou a criação do fornecedor.")
-    return resposta
 
 
-def editar_fornecedor(supplier_id, token=None, **fields):
-    if isinstance(supplier_id, bool) or not str(supplier_id).isdigit():
-        raise ValueError("ID de fornecedor inválido.")
-    allowed = {"name", "contact_name", "cnpj", "email", "phone", "status"}
-    payload = {
-        key: value
-        for key, value in fields.items()
-        if key in allowed and value is not None
-    }
-    resposta = xano_request(
-        "PATCH",
-        f"/supplier/{int(supplier_id)}",
-        token=token,
-        json=payload,
-    )
-    if not _confirmar_registro(resposta):
-        raise ValueError("O Xano não confirmou a edição do fornecedor.")
-    return resposta
 
 
-def inativar_fornecedor(supplier_id, token=None):
-    if isinstance(supplier_id, bool) or not str(supplier_id).isdigit():
-        raise ValueError("ID de fornecedor inválido.")
-    resposta = xano_request(
-        "PATCH",
-        f"/supplier/{int(supplier_id)}/deactivate",
-        token=token,
-    )
-    if not _confirmar_registro(resposta):
-        raise ValueError("O Xano não confirmou a inativação do fornecedor.")
-    return resposta
 
 
-def consultar_produto(product_id, token=None):
-    if isinstance(product_id, bool) or not str(product_id).isdigit():
-        raise ValueError("ID de produto inválido.")
-    payload = xano_request("GET", f"/product/{int(product_id)}", token=token)
-    registro = _extrair_registro(payload)
-    if registro is None:
-        raise ValueError("O Xano não confirmou a consulta do produto.")
-    return registro
 
 
-def editar_produto(product_id, token=None, **fields):
-    if isinstance(product_id, bool) or not str(product_id).isdigit():
-        raise ValueError("ID de produto inválido.")
-    allowed = {"name", "sku", "category_id", "sale_price", "min_stock", "status"}
-    payload = {
-        key: value
-        for key, value in fields.items()
-        if key in allowed and value is not None
-    }
-    payload.pop("stock_quantity", None)
-    payload.pop("average_cost", None)
-    if not payload:
-        raise ValueError("Informe pelo menos um campo válido para editar.")
-    resposta = xano_request(
-        "PATCH",
-        f"/product/{int(product_id)}",
-        token=token,
-        json=payload,
-    )
-    if not _confirmar_registro(resposta):
-        raise ValueError("O Xano não confirmou a edição do produto.")
-    return resposta
 
 
-def inativar_produto(product_id, token=None):
-    if isinstance(product_id, bool) or not str(product_id).isdigit():
-        raise ValueError("ID de produto inválido.")
-    resposta = xano_request(
-        "PATCH",
-        f"/product/{int(product_id)}/deactivate",
-        token=token,
-    )
-    if not _confirmar_registro(resposta):
-        raise ValueError("O Xano não confirmou a inativação do produto.")
-    return resposta
 
 
 def _validar_id_inteiro(valor, nome):
@@ -1280,58 +2628,8 @@ def registrar_venda(token=None, payload=None, idempotency_key=None, **fields):
     return resposta
 
 
-def listar_vendas(
-    token=None,
-    *,
-    sales_channel=None,
-    order_number=None,
-    status=None,
-    start_date=None,
-    end_date=None,
-    page=1,
-    per_page=20,
-):
-    sales_channel = str(sales_channel or "").strip()
-    if not sales_channel:
-        raise ValueError(
-            "O endpoint GET /sale exige sales_channel. "
-            "A consulta sem canal depende de suporte do backend."
-        )
-
-    params = {}
-    params["sales_channel"] = sales_channel
-    if order_number:
-        params["order_number"] = str(order_number).strip()
-    if status:
-        params["status"] = str(status).strip()
-    if start_date:
-        params["start_date"] = str(start_date).strip()
-    if end_date:
-        params["end_date"] = str(end_date).strip()
-    params["page"] = max(1, int(page))
-    params["per_page"] = min(100, max(1, int(per_page)))
-
-    payload = xano_request("GET", "/sale", token=token, params=params)
-    if isinstance(payload, list):
-        return {"items": payload}
-    if not isinstance(payload, dict):
-        raise ValueError("O Xano retornou uma resposta inválida para vendas.")
-
-    if isinstance(payload.get("items"), list):
-        return payload
-    if isinstance(payload.get("sales"), list):
-        return payload
-    raise ValueError(
-        "O Xano não retornou uma estrutura paginada compatível para vendas."
-    )
 
 
-def consultar_venda(sale_id, token=None):
-    sale_id = _validar_id_inteiro(sale_id, "O ID da venda")
-    payload = xano_request("GET", f"/sale/{sale_id}", token=token)
-    if not isinstance(payload, dict) or not payload:
-        raise ValueError("O Xano não confirmou a consulta da venda.")
-    return payload
 
 
 def consultar_metricas_vendas(

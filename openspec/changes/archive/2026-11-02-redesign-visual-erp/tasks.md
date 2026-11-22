@@ -1,0 +1,11 @@
+# Tarefas: Redesign visual do sistema
+
+- [x] 1. Revisar a estrutura atual das páginas e identificar estilos duplicados ou inconsistentes. Evidência: fluxo de `app/Home.py`, shell em `app/erp_ui.py` e telas em `app/erp_modules.py` foram inspecionados.
+- [x] 2. Definir e aplicar os estilos compartilhados da identidade visual. Evidência: tokens e regras visuais compartilhadas estão em `app/erp_ui.py`; inspeção anterior confirmou o escopo do tema interno.
+- [x] 3. Separar o fluxo de boas-vindas e login para que apenas uma tela seja exibida por vez. Evidência: `login_stage` seleciona um cartão; AppTest confirmou a transição entre as etapas.
+- [x] 4. Reorganizar o layout do login e corrigir espaços vazios excessivos. Evidência: layout e regras responsivas estão implementados em `app/Home.py`; o fluxo foi exercitado sem exceções e a validação visual anterior está registrada no histórico da sessão.
+- [x] 5. Padronizar navegação, cabeçalhos, botões, formulários e tabelas nas telas existentes. Evidência: shell compartilhado e estilos escopados em `app/erp_ui.py`; as sete telas autenticadas renderizaram sem exceções via AppTest.
+- [x] 6. Atualizar a apresentação dos gráficos para fundos claros e melhor legibilidade. Evidência: estilos de gráficos em `app/erp_ui.py`; gráficos das telas Visão geral e Relatórios foram renderizados e suas codificações de categoria/cores verificadas.
+- [x] 7. Exibir mensagens amigáveis para credenciais inválidas, sem expor detalhes técnicos. Evidência: `app/Home.py` converte falha simulada HTTP 403 em mensagem amigável; teste local não fez chamada externa.
+- [x] 8. Validar o fluxo de boas-vindas, login, retorno e erros de autenticação. Evidência: AppTest verificou boas-vindas → login → retorno e mensagem para credenciais inválidas simuladas.
+- [x] 9. Executar os testes existentes e corrigir regressões visuais ou funcionais. Evidência: 32 testes passaram; `py_compile` passou; as sete telas passaram no AppTest; `git diff --check` não reportou problemas.
